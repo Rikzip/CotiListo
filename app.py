@@ -16,38 +16,42 @@ from supabase import create_client, Client
 # ==========================================
 st.set_page_config(
     page_title="CotiListo - Cotizaciones", 
-    page_icon="📝", 
+    page_icon="⚡", 
     layout="centered",
     initial_sidebar_state="auto"
 )
 
-# --- GLOBAL CSS (Clean UI, Native Eye Fix & SPANISH TRANSLATION) ---
+# --- GLOBAL CSS (Clean UI & Spanish Translation - STABLE VERSION) ---
 st.markdown("""
     <style>
-    .block-container { padding-top: 4rem !important; padding-bottom: 1rem !important; }
+    /* General Clean UI */
+    .block-container { 
+        padding-top: 3rem !important; 
+        padding-bottom: 1rem !important; 
+    }
     [data-testid="stDecoration"] { display: none !important; }
     footer { display: none !important; }
-    .stDeployButton { display: none !important; } 
-    .stHeadingContainer a { display: none !important; }
-    h1 a, h2 a, h3 a, h4 a, h5 a, h6 a { display: none !important; }
-    svg.icon-link { display: none !important; }
-    
+
+    /* 🎯 SURGICAL FIX: Hide the right-side header elements (Deploy & 3 dots) without touching the left menu */
+    .stDeployButton { display: none !important; }
+    [data-testid="stAppDeployButton"] { display: none !important; }
+    [data-testid="stMainMenu"] { display: none !important; visibility: hidden !important; }
+    [data-testid="stHeaderActionElements"] { display: none !important; }
+
     /* Hide native browser password reveal icon */
     input::-ms-reveal,
     input::-ms-clear {
         display: none !important;
     }
     
-    /* TRANSLATE STREAMLIT FILE UPLOADER TO SPANISH */
+    /* Translate Streamlit file uploader to Spanish */
     [data-testid="stFileUploadDropzone"] div div::before {
         content: "Arrastra y suelta tu logo aquí";
         color: #555;
         display: block;
         margin-bottom: 5px;
     }
-    [data-testid="stFileUploadDropzone"] div div span {
-        display: none !important;
-    }
+    [data-testid="stFileUploadDropzone"] div div span,
     [data-testid="stFileUploadDropzone"] small {
         display: none !important;
     }
@@ -111,10 +115,7 @@ def fetch_user_data(force=False):
                     st.session_state.user_profile = res_prof.data[0]
                 
                 res_cli = supabase.table("clients").select("*").eq("user_id", st.session_state.user.id).order("name").execute()
-                if res_cli.data:
-                    st.session_state.clients = res_cli.data
-                else:
-                    st.session_state.clients = []
+                st.session_state.clients = res_cli.data if res_cli.data else []
             except Exception as e:
                 print(f"Error fetching data: {e}")
 
@@ -369,12 +370,21 @@ def page_free_generator():
             catalog_options.append(f"⭐ {item['desc']}")
             custom_catalog_map[f"⭐ {item['desc']}"] = item['price']
 
-    if template == "Taller Mecánico / Motos":
-        catalog_options += ["Servicio menor", "Servicio mayor", "Pastillas de freno"]
+    # Full Catalog Options based on Business Type
+    if template == "General":
+        catalog_options += ["Producto básico", "Producto premium", "Servicio general", "Envío / Delivery", "Descuento especial"]
+    elif template == "Taller Mecánico / Motos":
+        catalog_options += ["Diagnóstico general", "Servicio menor", "Servicio mayor", "Cambio de aceite y filtro", "Cambio de pastillas de freno", "Alineación y balanceo", "Revisión del sistema eléctrico", "Reparación de motor", "Limpieza de inyectores"]
     elif template == "Odontología / Dentista":
-        catalog_options += ["Limpieza dental", "Evaluación", "Relleno blanco"]
+        catalog_options += ["Consulta de evaluación", "Limpieza dental (Profilaxis)", "Relleno blanco (Resina)", "Extracción simple", "Extracción de cordal", "Blanqueamiento dental", "Tratamiento de canales", "Radiografía panorámica"]
+    elif template == "Clínica Médica":
+        catalog_options += ["Consulta médica general", "Consulta con especialista", "Examen de laboratorio clínico", "Electrocardiograma", "Ultrasonido", "Certificado médico", "Aplicación de medicamento"]
     elif template == "Construcción / Carpintería":
-        catalog_options += ["Mano de obra (por día)", "Instalación (m2)"]
+        catalog_options += ["Mano de obra (por día)", "Mano de obra (por obra)", "Instalación (m2)", "Fabricación de mueble a medida", "Pintura interior/exterior (m2)", "Reparación estructural", "Supervisión de obra", "Materiales varios"]
+    elif template == "Freelance / Servicios":
+        catalog_options += ["Consultoría (por hora)", "Consultoría (por proyecto)", "Desarrollo de página web", "Diseño de logotipo", "Gestión de redes sociales (Mensual)", "Auditoría / Análisis", "Traducción de documentos"]
+    elif template == "Eventos / Catering":
+        catalog_options += ["Menú por persona (Básico)", "Menú por persona (Premium)", "Alquiler de salón", "Alquiler de sillas y mesas", "Servicio de meseros", "Decoración floral", "Pastel personalizado", "Equipo de sonido"]
 
     selected_item = st.selectbox("Selecciona un servicio:", catalog_options)
     auto_desc = selected_item.replace("⭐ ", "") if selected_item in custom_catalog_map else (selected_item if selected_item != "Escribir manualmente..." else "")
@@ -744,7 +754,6 @@ if st.session_state.user:
             st.rerun()
     pg = st.navigation([page_gen, page_hist, page_crm, page_prof, page_sup])
 else:
-    # Maintenant 'page_sup' est aussi disponible ici !
     pg = st.navigation([page_gen, page_sup, page_log])
 
 pg.run()
