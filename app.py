@@ -9,7 +9,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 import urllib.request
-from supabase import create_client, Client
+from supabase import create_client, Client, ClientOptions
 from PIL import Image  # <-- IMPORT CRUCIAL POUR LA COMPRESSION
 
 # ==========================================
@@ -78,11 +78,26 @@ if 'supabase_client' not in st.session_state:
     url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
     key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
     if url and key:
-        st.session_state.supabase_client = create_client(url, key)
+        # Force PKCE flow to ensure Magic Links use ?code= instead of #access_token=
+        opts = ClientOptions(flow_type="pkce")
+        st.session_state.supabase_client = create_client(url, key, options=opts)
     else:
         st.session_state.supabase_client = None
 
 supabase = st.session_state.supabase_client
+
+# --- MAGIC LINK RECOVERY INTERCEPTION ---
+if supabase and "code" in st.query_params:
+    try:
+        # Exchange URL code for an official session
+        res = supabase.auth.exchange_code_for_session({"auth_code": st.query_params["code"]})
+        st.session_state.user = res.user
+        # Clean URL to remove the security code
+        st.query_params.clear()
+        st.session_state.show_welcome = True
+    except Exception as e:
+        st.error("El enlace de recuperación es inválido o ha expirado.")
+        st.query_params.clear()
 
 # ==========================================
 # 🧠 SESSION STATE & PERFORMANCE CACHE
