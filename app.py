@@ -793,7 +793,7 @@ def page_login():
         with st.expander("¿Olvidaste tu contraseña?"):
             # Step 1: Request OTP Code via Email
             if not st.session_state.get("recovery_code_sent", False):
-                st.markdown("<small>Ingresa tu email pour recibir un código de recuperación de 6 dígitos.</small>", unsafe_allow_html=True)
+                st.markdown("<small>Ingresa tu email para recibir un código de recuperación.</small>", unsafe_allow_html=True)
                 reset_email = st.text_input("Tu Email", key="reset_email_input", label_visibility="collapsed", placeholder="ejemplo@correo.com")
                 
                 if st.button("Enviar código", use_container_width=True):
@@ -812,9 +812,9 @@ def page_login():
             # Step 2: Input OTP Code and set New Password
             else:
                 st.success(f"📧 Código enviado a **{st.session_state.recovery_email}**")
-                st.markdown("<small>Ingresa el código de 6 dígitos de tu correo y ton nueva contraseña.</small>", unsafe_allow_html=True)
+                st.markdown("<small>Revisa tu correo (y la carpeta de Spam) e ingresa el código junto con tu nueva contraseña.</small>", unsafe_allow_html=True)
                 
-                recovery_code = st.text_input("Código de 6 dígitos")
+                recovery_code = st.text_input("Código de recuperación")
                 new_pw = st.text_input("Nueva Contraseña", type="password")
                 
                 col_btn1, col_btn2 = st.columns(2)
@@ -825,12 +825,16 @@ def page_login():
                             # Verify the numerical token
                             res = supabase.auth.verify_otp({
                                 "email": st.session_state.recovery_email,
-                                "token": recovery_code,
+                                "token": recovery_code.strip(),
                                 "type": "recovery"
                             })
                             
                             # Update user password now that they are authenticated
                             supabase.auth.update_user({"password": new_pw})
+                            
+                            # FIX: Force clean the cache before fetching new data
+                            st.session_state.user_profile = {}
+                            st.session_state.clients = []
                             
                             # Success: Clean up and log in
                             st.session_state.recovery_code_sent = False
@@ -841,7 +845,7 @@ def page_login():
                         except Exception as e:
                             st.error("El código es incorrecto o ha expirado.")
                     else:
-                        st.warning("Ingresa le código y una contraseña de al menos 6 caracteres.")
+                        st.warning("Ingresa el código y una contraseña de al menos 6 caracteres.")
                         
                 if col_btn2.button("Cancelar", use_container_width=True):
                     st.session_state.recovery_code_sent = False
