@@ -742,6 +742,7 @@ def page_support():
 # 🔐 PAGE: LOGIN
 # ==========================================
 
+# 1. Login processing function
 def process_login():
     try:
         res = supabase.auth.sign_in_with_password({
@@ -755,6 +756,7 @@ def process_login():
     except:
         st.session_state.login_error = "Credenciales incorrectas"
 
+# 2. Registration processing function
 def process_registration():
     try:
         supabase.auth.sign_up({
@@ -766,6 +768,7 @@ def process_registration():
     except Exception as e:
         st.session_state.reg_error = f"Error: {e}"
 
+# 3. Main Login Page UI
 def page_login():
     st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
     st.title("🔐 Acceso Premium")
@@ -775,6 +778,7 @@ def page_login():
     tab1, tab2 = st.tabs(["Ingresar", "Crear Cuenta"])
     
     with tab1:
+        # Standard Login Form
         with st.form("login_form"):
             st.text_input("Email", key="login_email", autocomplete="email")
             st.text_input("Contraseña", type="password", key="login_pw", autocomplete="current-password")
@@ -784,22 +788,67 @@ def page_login():
             st.error(st.session_state.login_error)
             st.session_state.login_error = None
 
+        # Interactive "Forgot Password" Section (OTP Flow)
         st.write("") 
         with st.expander("¿Olvidaste tu contraseña?"):
-            st.markdown("<small>Ingresa tu email y te enviaremos un enlace mágico para entrar.</small>", unsafe_allow_html=True)
-            reset_email = st.text_input("Tu Email", key="reset_email_input", label_visibility="collapsed", placeholder="ejemplo@correo.com")
+            # Step 1: Request OTP Code via Email
+            if not st.session_state.get("recovery_code_sent", False):
+                st.markdown("<small>Ingresa tu email pour recibir un código de recuperación de 6 dígitos.</small>", unsafe_allow_html=True)
+                reset_email = st.text_input("Tu Email", key="reset_email_input", label_visibility="collapsed", placeholder="ejemplo@correo.com")
+                
+                if st.button("Enviar código", use_container_width=True):
+                    if reset_email:
+                        try:
+                            # Trigger Supabase recovery email with {{ .Token }}
+                            supabase.auth.reset_password_email(reset_email.strip())
+                            st.session_state.recovery_email = reset_email.strip()
+                            st.session_state.recovery_code_sent = True
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                    else:
+                        st.warning("Por favor, ingresa tu email.")
             
-            if st.button("Enviar enlace de recuperación", use_container_width=True):
-                if reset_email:
-                    try:
-                        supabase.auth.reset_password_email(reset_email.strip())
-                        st.success("📧 ¡Revisa tu correo! (Busca también en Spam). Haz clic en el enlace para entrar y luego ve a 'Mi Perfil' para crear tu nueva contraseña.")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-                else:
-                    st.warning("Por favor, ingresa tu email.")
+            # Step 2: Input OTP Code and set New Password
+            else:
+                st.success(f"📧 Código enviado a **{st.session_state.recovery_email}**")
+                st.markdown("<small>Ingresa el código de 6 dígitos de tu correo y ton nueva contraseña.</small>", unsafe_allow_html=True)
+                
+                recovery_code = st.text_input("Código de 6 dígitos")
+                new_pw = st.text_input("Nueva Contraseña", type="password")
+                
+                col_btn1, col_btn2 = st.columns(2)
+                
+                if col_btn1.button("Cambiar Contraseña", type="primary", use_container_width=True):
+                    if recovery_code and len(new_pw) >= 6:
+                        try:
+                            # Verify the numerical token
+                            res = supabase.auth.verify_otp({
+                                "email": st.session_state.recovery_email,
+                                "token": recovery_code,
+                                "type": "recovery"
+                            })
+                            
+                            # Update user password now that they are authenticated
+                            supabase.auth.update_user({"password": new_pw})
+                            
+                            # Success: Clean up and log in
+                            st.session_state.recovery_code_sent = False
+                            st.session_state.user = res.user
+                            fetch_user_data(force=True)
+                            st.session_state.show_welcome = True
+                            st.rerun()
+                        except Exception as e:
+                            st.error("El código es incorrecto o ha expirado.")
+                    else:
+                        st.warning("Ingresa le código y una contraseña de al menos 6 caracteres.")
+                        
+                if col_btn2.button("Cancelar", use_container_width=True):
+                    st.session_state.recovery_code_sent = False
+                    st.rerun()
 
     with tab2:
+        # Account Registration Form
         with st.form("register_form"):
             st.text_input("Tu Email", key="reg_email")
             st.text_input("Crea una Contraseña", type="password", key="reg_pw") 
