@@ -10,6 +10,7 @@ from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 import urllib.request
 from supabase import create_client, Client
+from PIL import Image  # <-- IMPORT CRUCIAL POUR LA COMPRESSION
 
 # ==========================================
 # 📱 GLOBAL CONFIGURATION
@@ -120,6 +121,35 @@ def fetch_user_data(force=False):
                 print(f"Error fetching data: {e}")
 
 # ==========================================
+# ⚙️ IMAGE PROCESSING HELPER
+# ==========================================
+def process_image_for_pdf(image_input_stream):
+    try:
+        img = Image.open(image_input_stream)
+        if img.mode in ('RGBA', 'LA'):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            background.paste(img, mask=img.split()[3])
+            img = background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+            
+        target_width = 500
+        if img.width > target_width:
+            w_percent = (target_width / float(img.width))
+            h_size = int((float(img.height) * float(w_percent)))
+            img = img.resize((target_width, h_size), Image.Resampling.LANCZOS)
+            
+        compressed_stream = io.BytesIO()
+        img.save(compressed_stream, format='JPEG', quality=75, optimize=True)
+        compressed_stream.seek(0)
+        
+        return compressed_stream
+    except Exception as e:
+        print(f"Error processing image: {e}")
+        image_input_stream.seek(0)
+        return image_input_stream
+
+# ==========================================
 # ⚙️ PDF GENERATION ENGINE
 # ==========================================
 def generate_pdf(quote_data):
@@ -142,19 +172,23 @@ def generate_pdf(quote_data):
     logo_x = width - 1 * inch - logo_w
     logo_y = height - 1.6 * inch
     
+    image_stream_to_use = None
+    
     if quote_data.get('logo_file'):
-        try:
-            logo_img = ImageReader(quote_data['logo_file'])
-            c.drawImage(logo_img, logo_x, logo_y, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
-            logo_drawn = True
-        except: pass
+        image_stream_to_use = process_image_for_pdf(quote_data['logo_file'])
     elif quote_data.get('logo_url'):
         try:
             req = urllib.request.Request(quote_data['logo_url'], headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req) as response:
-                logo_img = ImageReader(io.BytesIO(response.read()))
-                c.drawImage(logo_img, logo_x, logo_y, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
-                logo_drawn = True
+                remote_img_stream = io.BytesIO(response.read())
+                image_stream_to_use = process_image_for_pdf(remote_img_stream)
+        except: pass
+
+    if image_stream_to_use:
+        try:
+            logo_img = ImageReader(image_stream_to_use)
+            c.drawImage(logo_img, logo_x, logo_y, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
+            logo_drawn = True
         except: pass
 
     if not logo_drawn and quote_data.get('seller_name'):
@@ -370,7 +404,6 @@ def page_free_generator():
             catalog_options.append(f"⭐ {item['desc']}")
             custom_catalog_map[f"⭐ {item['desc']}"] = item['price']
 
-    # Full Catalog Options based on Business Type
     if template == "General":
         catalog_options += ["Producto básico", "Producto premium", "Servicio general", "Envío / Delivery", "Descuento especial"]
     elif template == "Taller Mecánico / Motos":
@@ -658,6 +691,20 @@ def page_profile():
                 st.success("Añadido.")
                 st.rerun()
 
+    st.subheader("🔒 Seguridad")
+    with st.expander("Cambiar mi Contraseña"):
+        st.info("Si usaste un enlace de recuperación, ingresa aquí tu nueva contraseña.")
+        new_password = st.text_input("Nueva Contraseña", type="password")
+        if st.button("Actualizar Contraseña"):
+            if len(new_password) >= 6:
+                try:
+                    supabase.auth.update_user({"password": new_password})
+                    st.success("✅ ¡Tu contraseña ha sido actualizada con éxito!")
+                except Exception as e:
+                    st.error(f"Error al actualizar: {e}")
+            else:
+                st.warning("La contraseña debe tener al menos 6 caracteres.")
+
 # ==========================================
 # 💬 PAGE: SOPORTE
 # ==========================================
@@ -679,6 +726,7 @@ def page_support():
 # ==========================================
 # 🔐 PAGE: LOGIN
 # ==========================================
+
 def process_login():
     try:
         res = supabase.auth.sign_in_with_password({
@@ -710,20 +758,36 @@ def page_login():
         return st.error("Supabase error.")
 
     tab1, tab2 = st.tabs(["Ingresar", "Crear Cuenta"])
+    
     with tab1:
         with st.form("login_form"):
             st.text_input("Email", key="login_email", autocomplete="email")
-            st.text_input("Password", type="password", key="login_pw", autocomplete="current-password")
+            st.text_input("Contraseña", type="password", key="login_pw", autocomplete="current-password")
             st.form_submit_button("Entrar", type="primary", use_container_width=True, on_click=process_login)
         
         if st.session_state.get("login_error"):
             st.error(st.session_state.login_error)
             st.session_state.login_error = None
 
+        st.write("") 
+        with st.expander("¿Olvidaste tu contraseña?"):
+            st.markdown("<small>Ingresa tu email y te enviaremos un enlace mágico para entrar.</small>", unsafe_allow_html=True)
+            reset_email = st.text_input("Tu Email", key="reset_email_input", label_visibility="collapsed", placeholder="ejemplo@correo.com")
+            
+            if st.button("Enviar enlace de recuperación", use_container_width=True):
+                if reset_email:
+                    try:
+                        supabase.auth.reset_password_email(reset_email.strip())
+                        st.success("📧 ¡Revisa tu correo! (Busca también en Spam). Haz clic en el enlace para entrar y luego ve a 'Mi Perfil' para crear tu nueva contraseña.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+                else:
+                    st.warning("Por favor, ingresa tu email.")
+
     with tab2:
         with st.form("register_form"):
             st.text_input("Tu Email", key="reg_email")
-            st.text_input("Crea un Password", type="password", key="reg_pw")
+            st.text_input("Crea una Contraseña", type="password", key="reg_pw") 
             st.form_submit_button("Registrarme", use_container_width=True, on_click=process_registration)
         
         if st.session_state.get("reg_msg"):
