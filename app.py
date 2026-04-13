@@ -829,17 +829,19 @@ def page_login():
                                 "type": "recovery"
                             })
                             
-                            # Update user password now that they are authenticated
+                            # Update user password
                             supabase.auth.update_user({"password": new_pw})
                             
-                            # FIX: Force clean the cache before fetching new data
-                            st.session_state.user_profile = {}
-                            st.session_state.clients = []
+                            # CRITICAL: Link the user and clear previous empty profile cache
+                            st.session_state.user = res.user
+                            st.session_state.user_profile = {} 
+                            st.session_state.clients = []      
+                            
+                            # Immediate fetch of real data (Pacto, Logo, etc.)
+                            fetch_user_data(force=True)
                             
                             # Success: Clean up and log in
                             st.session_state.recovery_code_sent = False
-                            st.session_state.user = res.user
-                            fetch_user_data(force=True)
                             st.session_state.show_welcome = True
                             st.rerun()
                         except Exception as e:
