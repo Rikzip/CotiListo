@@ -799,7 +799,7 @@ def page_login():
                 if st.button("Enviar código", use_container_width=True):
                     if reset_email:
                         try:
-                            # Trigger Supabase recovery email with {{ .Token }}
+                            # Trigger Supabase recovery email
                             supabase.auth.reset_password_email(reset_email.strip())
                             st.session_state.recovery_email = reset_email.strip()
                             st.session_state.recovery_code_sent = True
@@ -812,7 +812,7 @@ def page_login():
             # Step 2: Input OTP Code and set New Password
             else:
                 st.success(f"📧 Código enviado a **{st.session_state.recovery_email}**")
-                st.markdown("<small>Revisa tu correo (y la carpeta de Spam) e ingresa el código junto con tu nueva contraseña.</small>", unsafe_allow_html=True)
+                st.markdown("<small>Revisa tu correo e ingresa el código junto con tu nueva contraseña.</small>", unsafe_allow_html=True)
                 
                 recovery_code = st.text_input("Código de recuperación")
                 new_pw = st.text_input("Nueva Contraseña", type="password")
@@ -822,32 +822,39 @@ def page_login():
                 if col_btn1.button("Cambiar Contraseña", type="primary", use_container_width=True):
                     if recovery_code and len(new_pw) >= 6:
                         try:
-                            # Verify the numerical token
+                            # 1. Verify OTP
                             res = supabase.auth.verify_otp({
                                 "email": st.session_state.recovery_email,
                                 "token": recovery_code.strip(),
                                 "type": "recovery"
                             })
                             
-                            # Update user password
+                            # 2. Update user password
                             supabase.auth.update_user({"password": new_pw})
                             
-                            # CRITICAL: Link the user and clear previous empty profile cache
+                            # 3. Set the user in session immediately
                             st.session_state.user = res.user
-                            st.session_state.user_profile = {} 
-                            st.session_state.clients = []      
                             
-                            # Immediate fetch of real data (Pacto, Logo, etc.)
-                            fetch_user_data(force=True)
+                            # 4. HARD SYNC: Fetch profile and clients directly here
+                            # This bypasses the global function to ensure data is in memory before rerun
+                            res_prof = supabase.table("profiles").select("*").eq("id", res.user.id).execute()
+                            if res_prof.data:
+                                st.session_state.user_profile = res_prof.data[0]
+                            else:
+                                st.session_state.user_profile = {}
+
+                            res_cli = supabase.table("clients").select("*").eq("user_id", res.user.id).order("name").execute()
+                            st.session_state.clients = res_cli.data if res_cli.data else []
                             
-                            # Success: Clean up and log in
+                            # 5. Success: Clean up and force refresh
                             st.session_state.recovery_code_sent = False
                             st.session_state.show_welcome = True
                             st.rerun()
+                            
                         except Exception as e:
                             st.error("El código es incorrecto o ha expirado.")
                     else:
-                        st.warning("Ingresa el código y una contraseña de al menos 6 caracteres.")
+                        st.warning("Ingresa le código y une contraseña de al menos 6 caracteres.")
                         
                 if col_btn2.button("Cancelar", use_container_width=True):
                     st.session_state.recovery_code_sent = False
