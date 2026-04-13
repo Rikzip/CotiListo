@@ -775,6 +775,11 @@ def page_login():
     if not supabase:
         return st.error("Supabase error.")
 
+    # Show success message after password change if it exists
+    if st.session_state.get("password_changed_success"):
+        st.success("✅ Contraseña actualizada. Ya puedes ingresar.")
+        st.session_state.password_changed_success = False
+
     tab1, tab2 = st.tabs(["Ingresar", "Crear Cuenta"])
     
     with tab1:
@@ -791,7 +796,6 @@ def page_login():
         # Interactive "Forgot Password" Section (OTP Flow)
         st.write("") 
         with st.expander("¿Olvidaste tu contraseña?"):
-            # Step 1: Request OTP Code via Email
             if not st.session_state.get("recovery_code_sent", False):
                 st.markdown("<small>Ingresa tu email para recibir un código de recuperación.</small>", unsafe_allow_html=True)
                 reset_email = st.text_input("Tu Email", key="reset_email_input", label_visibility="collapsed", placeholder="ejemplo@correo.com")
@@ -799,7 +803,6 @@ def page_login():
                 if st.button("Enviar código", use_container_width=True):
                     if reset_email:
                         try:
-                            # Trigger Supabase recovery email
                             supabase.auth.reset_password_email(reset_email.strip())
                             st.session_state.recovery_email = reset_email.strip()
                             st.session_state.recovery_code_sent = True
@@ -809,59 +812,46 @@ def page_login():
                     else:
                         st.warning("Por favor, ingresa tu email.")
             
-            # Step 2: Input OTP Code and set New Password
             else:
                 st.success(f"📧 Código enviado a **{st.session_state.recovery_email}**")
-                st.markdown("<small>Revisa tu correo e ingresa el código junto con tu nueva contraseña.</small>", unsafe_allow_html=True)
+                st.markdown("<small>Ingresa el código y tu nueva contraseña.</small>", unsafe_allow_html=True)
                 
                 recovery_code = st.text_input("Código de recuperación")
                 new_pw = st.text_input("Nueva Contraseña", type="password")
                 
                 col_btn1, col_btn2 = st.columns(2)
                 
-                if col_btn1.button("Cambiar Contraseña", type="primary", use_container_width=True):
+                if col_btn1.button("Actualizar", type="primary", use_container_width=True):
                     if recovery_code and len(new_pw) >= 6:
                         try:
-                            # 1. Verify OTP
-                            res = supabase.auth.verify_otp({
+                            # 1. Verify OTP (This creates a temporary session)
+                            supabase.auth.verify_otp({
                                 "email": st.session_state.recovery_email,
                                 "token": recovery_code.strip(),
                                 "type": "recovery"
                             })
                             
-                            # 2. Update user password
+                            # 2. Update password
                             supabase.auth.update_user({"password": new_pw})
                             
-                            # 3. Set the user in session immediately
-                            st.session_state.user = res.user
+                            # 3. Log out immediately to clean the state
+                            supabase.auth.sign_out()
                             
-                            # 4. HARD SYNC: Fetch profile and clients directly here
-                            # This bypasses the global function to ensure data is in memory before rerun
-                            res_prof = supabase.table("profiles").select("*").eq("id", res.user.id).execute()
-                            if res_prof.data:
-                                st.session_state.user_profile = res_prof.data[0]
-                            else:
-                                st.session_state.user_profile = {}
-
-                            res_cli = supabase.table("clients").select("*").eq("user_id", res.user.id).order("name").execute()
-                            st.session_state.clients = res_cli.data if res_cli.data else []
-                            
-                            # 5. Success: Clean up and force refresh
+                            # 4. Success flag and reset
+                            st.session_state.password_changed_success = True
                             st.session_state.recovery_code_sent = False
-                            st.session_state.show_welcome = True
                             st.rerun()
                             
                         except Exception as e:
                             st.error("El código es incorrecto o ha expirado.")
                     else:
-                        st.warning("Ingresa le código y une contraseña de al menos 6 caracteres.")
+                        st.warning("Completa los campos (mínimo 6 caracteres).")
                         
                 if col_btn2.button("Cancelar", use_container_width=True):
                     st.session_state.recovery_code_sent = False
                     st.rerun()
 
     with tab2:
-        # Account Registration Form
         with st.form("register_form"):
             st.text_input("Tu Email", key="reg_email")
             st.text_input("Crea una Contraseña", type="password", key="reg_pw") 
