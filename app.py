@@ -3,14 +3,14 @@ import io
 import urllib.parse
 import os
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 import urllib.request
 from supabase import create_client, Client, ClientOptions
-from PIL import Image  # <-- IMPORT CRUCIAL POUR LA COMPRESSION
+from PIL import Image
 
 # ==========================================
 # 📱 GLOBAL CONFIGURATION
@@ -72,13 +72,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 🔑 SUPABASE CONNECTION
+# 🔑 SUPABASE CONNECTION (MUST BE BEFORE ROUTER)
 # ==========================================
 if 'supabase_client' not in st.session_state:
     url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
     key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
     if url and key:
-        # Force PKCE flow to ensure Magic Links use ?code= instead of #access_token=
+        # Force PKCE flow for standard security
         opts = ClientOptions(flow_type="pkce")
         st.session_state.supabase_client = create_client(url, key, options=opts)
     else:
@@ -86,18 +86,55 @@ if 'supabase_client' not in st.session_state:
 
 supabase = st.session_state.supabase_client
 
-# --- MAGIC LINK RECOVERY INTERCEPTION ---
-if supabase and "code" in st.query_params:
+# ==========================================
+# 🌍 PUBLIC ROUTER: THE VIEWER PAGE
+# ==========================================
+# We grab the params into a local variable immediately to avoid losing them on refresh
+query_params = st.query_params.to_dict()
+
+if "doc" in query_params:
+    doc_id = query_params["doc"]
+    
+    # Force a clean UI state
+    st.empty()
+    
     try:
-        # Exchange URL code for an official session
-        res = supabase.auth.exchange_code_for_session({"auth_code": st.query_params["code"]})
-        st.session_state.user = res.user
-        # Clean URL to remove the security code
-        st.query_params.clear()
-        st.session_state.show_welcome = True
+        if supabase:
+            # Fetch the specific quote from DB
+            res = supabase.table("quotes").select("*").eq("id", doc_id).execute()
+            
+            if res.data:
+                quote = res.data[0]
+                
+                # 1. Check document age (30 days limit)
+                created_date = datetime.fromisoformat(quote['created_at'].replace("Z", "+00:00"))
+                days_old = (datetime.now(timezone.utc) - created_date).days
+                
+                # Render the viewer UI
+                st.title(f"📄 Cotización para {quote['client_name']}")
+                
+                if days_old > 30:
+                    st.error("⚠️ Documento Expirado")
+                    st.warning("Por seguridad y posible actualización de precios, este enlace ha expirado tras 30 días. Por favor, contacta a tu asesor para solicitar una versión actualizada.")
+                else:
+                    st.write(f"**Total:** {quote['currency']} {quote['total_amount']}")
+                    pdf_url = quote.get("pdf_url")
+                    
+                    if pdf_url:
+                        # Display the PDF in an iframe
+                        st.components.v1.iframe(pdf_url, width=None, height=800, scrolling=True)
+                        st.markdown(f"#### [🔗 Descargar documento original]({pdf_url})")
+                    else:
+                        st.warning("El documento ya no está disponible.")
+            else:
+                st.error("Documento no encontrado o enlace inválido.")
+        else:
+            st.error("Error de configuración de base de datos.")
     except Exception as e:
-        st.error("El enlace de recuperación es inválido o ha expirado.")
-        st.query_params.clear()
+        st.error(f"Error de conexión: {e}")
+    
+    # CRITICAL: Stop execution here to prevent loading the rest of the app
+    st.stop()
 
 # ==========================================
 # 🧠 SESSION STATE & PERFORMANCE CACHE
@@ -362,6 +399,8 @@ def page_free_generator():
     st.markdown("### 👤 Datos del Cliente")
     country_codes = {"🇬🇹 +502": "502", "🇸🇻 +503": "503", "🇭🇳 +504": "504", "🇲🇽 +52": "52", "🇺🇸 +1": "1", "Otra": ""}
     
+    c_email = "" # Initialize empty
+    
     if st.session_state.user and st.session_state.clients:
         client_options = ["➕ Crear nuevo..."] + [c['name'] for c in st.session_state.clients]
         sel_c = st.selectbox("Buscar cliente:", client_options)
@@ -374,7 +413,12 @@ def page_free_generator():
                 phone_prefix = country_codes[selected_country]
             with col_phone:
                 c_phone = st.text_input("WhatsApp / Teléfono")
-            c_nit = st.text_input("NIT / ID Fiscal")
+                
+            col_email, col_nit = st.columns(2)
+            with col_email:
+                c_email = st.text_input("Email (Opcional)", placeholder="ejemplo@correo.com")
+            with col_nit:
+                c_nit = st.text_input("NIT / ID Fiscal")
         else:
             c_data = next(c for c in st.session_state.clients if c['name'] == sel_c)
             c_name = sel_c
@@ -387,7 +431,11 @@ def page_free_generator():
             with col_phone:
                 c_phone = st.text_input("WhatsApp / Teléfono", value=c_data.get('phone', ''))
             
-            c_nit = st.text_input("NIT / ID Fiscal", value=c_data.get('nit', ''))
+            col_email, col_nit = st.columns(2)
+            with col_email:
+                c_email = st.text_input("Email (Opcional)", value=c_data.get('email', ''))
+            with col_nit:
+                c_nit = st.text_input("NIT / ID Fiscal", value=c_data.get('nit', ''))
     else:
         c_name = st.text_input("Nombre Cliente", placeholder="Ej: Maria Lopez")
         col_cc, col_phone = st.columns([1, 2])
@@ -396,7 +444,12 @@ def page_free_generator():
             phone_prefix = country_codes[selected_country]
         with col_phone:
             c_phone = st.text_input("WhatsApp / Teléfono", placeholder="Ej: 55551234")
-        c_nit = st.text_input("NIT / ID Fiscal", placeholder="Ej: 1234567-8")
+            
+        col_email, col_nit = st.columns(2)
+        with col_email:
+            c_email = st.text_input("Email (Opcional)", placeholder="ejemplo@correo.com")
+        with col_nit:
+            c_nit = st.text_input("NIT / ID Fiscal", placeholder="Ej: 1234567-8")
 
     vehicle_desc, vehicle_plate = "", ""
     if template == "Taller Mecánico / Motos":
@@ -479,12 +532,15 @@ def page_free_generator():
 
     st.divider()
 
+    # --- STEP C: QUOTE PREPARATION & CLOUD UPLOAD ---
     if st.button("Preparar Cotización ✨", type="primary", use_container_width=True):
         if not c_name or not st.session_state.cart:
             st.error("Faltan datos.")
         else:
+            # Format phone for display
             display_phone = f"+{phone_prefix} {c_phone}" if c_phone and phone_prefix else c_phone
             
+            # Prepare data object for PDF generation
             q_data = {
                 "date": datetime.now().strftime("%d/%m/%Y"), 
                 "client_name": c_name, 
@@ -507,40 +563,80 @@ def page_free_generator():
                 "terms": profile.get('terms_conditions')
             }
             
+            # Generate PDF in memory
             st.session_state.pdf_bytes = generate_pdf(q_data)
             st.session_state.pdf_ready = True
-            
-            if c_phone:
-                clean_phone = ''.join(filter(str.isdigit, c_phone))
-                full_wa_number = f"{phone_prefix}{clean_phone}"
-                wa_message = f"¡Hola {c_name}! 👋 Te comparto la cotización de {seller_name if seller_name else 'nuestro servicio'}. El total es de {currency} {total:.2f}. Quedo a las órdenes si tienes alguna duda."
-                wa_encoded = urllib.parse.quote(wa_message)
-                st.session_state.wa_url = f"https://wa.me/{full_wa_number}?text={wa_encoded}"
-            else:
-                st.session_state.wa_url = ""
+            pdf_public_url = ""
+            smart_url = ""
             
             if st.session_state.user:
                 try:
+                    # 1. Upload PDF to Supabase Storage
+                    file_name = f"{st.session_state.user.id}/cotizacion_{int(datetime.now().timestamp())}.pdf"
+                    supabase.storage.from_("quotations").upload(
+                        file=st.session_state.pdf_bytes,
+                        path=file_name,
+                        file_options={"content-type": "application/pdf", "upsert": "true"}
+                    )
+                    
+                    # 2. Get the permanent public storage URL
+                    pdf_public_url = supabase.storage.from_("quotations").get_public_url(file_name)
+                    
+                    # 3. Clean data for Database insertion
                     db_quote_data = q_data.copy()
                     db_quote_data.pop('logo_file', None)
                     
-                    supabase.table("quotes").insert({
+                    # 4. Save quote to DB and retrieve the generated ID for the viewer
+                    res = supabase.table("quotes").insert({
                         "user_id": st.session_state.user.id, 
                         "client_name": c_name, 
                         "total_amount": total, 
                         "currency": q_data["currency"], 
-                        "quote_data": db_quote_data
+                        "quote_data": db_quote_data,
+                        "pdf_url": pdf_public_url 
                     }).execute()
                     
+                    # 5. Generate the professional "SaaS" URL for the client
+                    quote_id = res.data[0]['id']
+                    
+                    # 🌐 TON DOMAINE OFFICIEL
+                    base_url = "https://app.cotilisto.com" 
+                    smart_url = f"{base_url}/?doc={quote_id}"
+                    
+                    # 6. Update or Create client record
                     existing_client = next((c for c in st.session_state.clients if c['name'] == c_name), None)
-                    client_payload = {"user_id": st.session_state.user.id, "name": c_name, "phone": c_phone, "nit": c_nit}
+                    client_payload = {
+                        "user_id": st.session_state.user.id, 
+                        "name": c_name, 
+                        "phone": c_phone, 
+                        "email": c_email,  
+                        "nit": c_nit
+                    }
                     if existing_client:
                         client_payload["id"] = existing_client["id"]
                     supabase.table("clients").upsert(client_payload).execute()
                     
                     fetch_user_data(force=True)
                 except Exception as e:
-                    print(f"DB Error: {e}")
+                    print(f"DB/Storage Error: {e}")
+            
+            # --- WHATSAPP MESSAGE GENERATION ---
+            if c_phone:
+                clean_phone = ''.join(filter(str.isdigit, c_phone))
+                full_wa_number = f"{phone_prefix}{clean_phone}"
+                
+                wa_message = f"¡Hola {c_name}! 👋 Te comparto la cotización de {seller_name if seller_name else 'nuestro servicio'}. El total es de {q_data['currency']} {total:.2f}. "
+                
+                if smart_url:
+                    wa_message += f"\n\n📄 Puedes ver y descargar tu documento aquí:\n{smart_url}"
+                else:
+                    wa_message += "\n\n(Regístrate en CotiListo para enviar el PDF por enlace directo)."
+                
+                # 🛡️ EMOJI FIX: We force the encoding to UTF-8
+                wa_encoded = urllib.parse.quote(wa_message.encode('utf-8'))
+                st.session_state.wa_url = f"https://wa.me/{full_wa_number}?text={wa_encoded}"
+            else:
+                st.session_state.wa_url = ""
             
             st.balloons()
 
@@ -560,40 +656,102 @@ def page_free_generator():
                 st.link_button("2️⃣ Enviar WhatsApp 💬", st.session_state.wa_url, use_container_width=True)
 
 # ==========================================
-# 📊 PAGE: HISTORIAL
+# 🗂️ PAGE: HISTORY (DASHBOARD)
 # ==========================================
 def page_history():
-    st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
-    st.title("🗂️ Historial")
+    st.title("🗂️ Historial de Cotizaciones")
+    st.markdown("Gestiona, reenvía y actualiza tus documentos.")
+
     if not st.session_state.user:
-        return st.warning("Inicia sesión para ver tu historial.")
+        st.warning("Por favor, inicia sesión para ver tu historial.")
+        return
 
-    search = st.text_input("🔍 Buscar por nombre...", placeholder="Ej: Maria Lopez")
-    
     try:
-        query = supabase.table("quotes").select("*").eq("user_id", st.session_state.user.id)
-        if search:
-            query = query.ilike("client_name", f"%{search}%")
-        quotes = query.order("created_at", desc=True).execute().data
-    except:
-        quotes = []
+        # Fetch all quotes for the current user, newest first
+        res = supabase.table("quotes").select("*").eq("user_id", st.session_state.user.id).order("created_at", desc=True).execute()
+        quotes = res.data
 
-    if not quotes:
-        return st.info("No hay cotizaciones.")
+        if not quotes:
+            st.info("Aún no has creado ninguna cotización.")
+            return
 
-    for q in quotes:
-        try:
-            display_date = datetime.strptime(q['created_at'].split('T')[0], "%Y-%m-%d").strftime("%d/%m/%Y")
-        except:
-            display_date = "Fecha"
-
-        with st.expander(f"📄 {display_date} | {q['client_name']} - {q.get('currency', 'Q')} {q['total_amount']:.2f}"):
-            qd = q['quote_data']
-            qd['logo_file'] = None 
-            for item in qd.get('cart', []):
-                st.write(f"- {item['qty']}x {item['desc']}")
+        for q in quotes:
+            q_data = q.get("quote_data", {})
+            client_name = q.get("client_name", "Cliente")
+            total_amount = q.get("total_amount", 0)
+            currency = q.get("currency", "$")
+            doc_id = q.get("id")
             
-            st.download_button("📥 Re-descargar PDF", generate_pdf(qd), f"Cotizacion_{q['client_name']}.pdf", key=f"dl_{q['id']}")
+            # Calculate quote age
+            created_date = datetime.fromisoformat(q['created_at'].replace("Z", "+00:00"))
+            days_old = (datetime.now(timezone.utc) - created_date).days
+            
+            # Use expander to keep the UI clean
+            with st.expander(f"📄 {client_name} - {currency} {total_amount} (Hace {days_old} días)"):
+                col1, col2, col3 = st.columns(3)
+                
+                # 🌐 YOUR OFFICIAL DOMAIN
+                base_url = "https://app.cotilisto.com" 
+                smart_url = f"{base_url}/?doc={doc_id}"
+
+                if days_old > 30:
+                    st.error("⚠️ Este enlace ha expirado para el cliente (>30 días)")
+                    
+                    # --- REGENERATION MAGIC ---
+                    if st.button("🔄 Regenerar Cotización", key=f"regen_{doc_id}", use_container_width=True):
+                        try:
+                            # 1. Regenerate PDF from saved JSON data
+                            new_pdf_bytes = generate_pdf(q_data)
+                            
+                            # 2. Upload new PDF
+                            file_name = f"{st.session_state.user.id}/cotizacion_{int(datetime.now().timestamp())}.pdf"
+                            supabase.storage.from_("quotations").upload(
+                                file=new_pdf_bytes, 
+                                path=file_name, 
+                                file_options={"content-type": "application/pdf"}
+                            )
+                            new_pdf_url = supabase.storage.from_("quotations").get_public_url(file_name)
+                            
+                            # 3. Update DB (New URL & Reset created_at to NOW)
+                            supabase.table("quotes").update({
+                                "pdf_url": new_pdf_url,
+                                "created_at": datetime.now(timezone.utc).isoformat()
+                            }).eq("id", doc_id).execute()
+                            
+                            st.success("¡Cotización actualizada! La página se recargará.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error al regenerar: {e}")
+                else:
+                    # --- ACTIVE QUOTE ACTIONS ---
+                    with col1:
+                        # 1. View Viewer Page
+                        st.link_button("👁️ Ver Enlace", smart_url, use_container_width=True)
+                    
+                    with col2:
+                        # 2. Smart WhatsApp Follow-up (No emojis in the URL text)
+                        client_phone = q_data.get("display_phone", "")
+                        if client_phone:
+                            clean_phone = ''.join(filter(str.isdigit, client_phone))
+                            
+                            # Clean text without emojis to ensure 100% URL compatibility
+                            wa_msg = f"¡Hola {client_name}! Te comparto nuevamente el enlace de tu cotización:\n{smart_url}"
+                            
+                            wa_encoded = urllib.parse.quote(wa_msg)
+                            wa_url = f"https://wa.me/{clean_phone}?text={wa_encoded}"
+                            
+                            st.link_button("💬 WhatsApp", wa_url, use_container_width=True)
+                        else:
+                            st.button("💬 WhatsApp", disabled=True, key=f"wa_dis_{doc_id}", help="No hay teléfono registrado", use_container_width=True)
+                    
+                    with col3:
+                        # 3. Native Email Draft
+                        subject = urllib.parse.quote(f"Tu Cotización - {client_name}")
+                        body = urllib.parse.quote(f"Hola {client_name},\n\nAdjunto el enlace a tu cotización segura:\n{smart_url}\n\nSaludos cordiales,")
+                        st.link_button("📧 Enviar Email", f"mailto:?subject={subject}&body={body}", use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error cargando el historial: {e}")
 
 # ==========================================
 # 👥 PAGE: CLIENTES
@@ -612,9 +770,15 @@ def page_clients():
         with st.container(border=True):
             with st.expander(f"👤 **{c['name']}**"):
                 new_phone = st.text_input("Teléfono", value=c.get('phone', ''), key=f"p_{c['id']}")
+                new_email = st.text_input("Email (Opcional)", value=c.get('email', ''), key=f"e_{c['id']}")
                 new_nit = st.text_input("NIT / ID Fiscal", value=c.get('nit', ''), key=f"n_{c['id']}")
+                
                 if st.button("💾 Guardar", key=f"btn_{c['id']}"):
-                    supabase.table("clients").update({"phone": new_phone, "nit": new_nit}).eq("id", c['id']).execute()
+                    supabase.table("clients").update({
+                        "phone": new_phone, 
+                        "email": new_email,
+                        "nit": new_nit
+                    }).eq("id", c['id']).execute()
                     fetch_user_data(force=True)
                     st.success("¡Actualizado!")
                     st.rerun()
