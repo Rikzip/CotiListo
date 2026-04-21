@@ -11,41 +11,40 @@ from reportlab.lib.utils import ImageReader
 import urllib.request
 from supabase import create_client, Client, ClientOptions
 from PIL import Image
+import logging
 
 # ==========================================
 # 📱 GLOBAL CONFIGURATION
 # ==========================================
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
+
+# 🌍 GLOBAL CONSTANTS — single source of truth
+BASE_URL = os.environ.get("APP_BASE_URL", "https://app.cotilisto.com")
+PDF_LINK_EXPIRY_DAYS = 30
+PDF_SIGNED_URL_SECONDS = PDF_LINK_EXPIRY_DAYS * 86400  # 30 days in seconds
+
 st.set_page_config(
-    page_title="CotiListo - Cotizaciones", 
-    page_icon="⚡", 
+    page_title="CotiListo - Cotizaciones",
+    page_icon="⚡",
     layout="centered",
     initial_sidebar_state="auto"
 )
 
-# --- GLOBAL CSS (Clean UI & Spanish Translation - STABLE VERSION) ---
 st.markdown("""
     <style>
-    /* General Clean UI */
-    .block-container { 
-        padding-top: 3rem !important; 
-        padding-bottom: 1rem !important; 
+    .block-container {
+        padding-top: 3rem !important;
+        padding-bottom: 1rem !important;
     }
     [data-testid="stDecoration"] { display: none !important; }
     footer { display: none !important; }
-
-    /* 🎯 SURGICAL FIX: Hide the right-side header elements (Deploy & 3 dots) without touching the left menu */
     .stDeployButton { display: none !important; }
     [data-testid="stAppDeployButton"] { display: none !important; }
     [data-testid="stMainMenu"] { display: none !important; visibility: hidden !important; }
     [data-testid="stHeaderActionElements"] { display: none !important; }
+    input::-ms-reveal, input::-ms-clear { display: none !important; }
 
-    /* Hide native browser password reveal icon */
-    input::-ms-reveal,
-    input::-ms-clear {
-        display: none !important;
-    }
-    
-    /* Translate Streamlit file uploader to Spanish */
     [data-testid="stFileUploadDropzone"] div div::before {
         content: "Arrastra y suelta tu logo aquí";
         color: #555;
@@ -53,9 +52,7 @@ st.markdown("""
         margin-bottom: 5px;
     }
     [data-testid="stFileUploadDropzone"] div div span,
-    [data-testid="stFileUploadDropzone"] small {
-        display: none !important;
-    }
+    [data-testid="stFileUploadDropzone"] small { display: none !important; }
     [data-testid="stFileUploadDropzone"] button::before {
         content: "Buscar archivo";
         display: block;
@@ -65,63 +62,55 @@ st.markdown("""
         transform: translate(-50%, -50%);
         width: 100%;
     }
-    [data-testid="stFileUploadDropzone"] button span {
-        visibility: hidden;
-    }
+    [data-testid="stFileUploadDropzone"] button span { visibility: hidden; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 🔑 SUPABASE CONNECTION (MUST BE BEFORE ROUTER)
+# 🔑 SUPABASE CONNECTION
 # ==========================================
-if 'supabase_client' not in st.session_state:
+@st.cache_resource
+def get_supabase_client():
+    """Create and cache the Supabase client (created only once per session)."""
     url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
     key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
     if url and key:
-        # Force PKCE flow for standard security
         opts = ClientOptions(flow_type="pkce")
-        st.session_state.supabase_client = create_client(url, key, options=opts)
-    else:
-        st.session_state.supabase_client = None
+        return create_client(url, key, options=opts)
+    return None
 
-supabase = st.session_state.supabase_client
+supabase = get_supabase_client()
 
 # ==========================================
 # 🌍 PUBLIC ROUTER: THE VIEWER PAGE
 # ==========================================
-# We grab the params into a local variable immediately to avoid losing them on refresh
 query_params = st.query_params.to_dict()
 
 if "doc" in query_params:
     doc_id = query_params["doc"]
-    
-    # Force a clean UI state
     st.empty()
-    
+
     try:
         if supabase:
-            # Fetch the specific quote from DB
             res = supabase.table("quotes").select("*").eq("id", doc_id).execute()
-            
             if res.data:
                 quote = res.data[0]
-                
-                # 1. Check document age (30 days limit)
                 created_date = datetime.fromisoformat(quote['created_at'].replace("Z", "+00:00"))
                 days_old = (datetime.now(timezone.utc) - created_date).days
-                
-                # Render the viewer UI
+
                 st.title(f"📄 Cotización para {quote['client_name']}")
-                
-                if days_old > 30:
+
+                if days_old > PDF_LINK_EXPIRY_DAYS:
                     st.error("⚠️ Documento Expirado")
-                    st.warning("Por seguridad y posible actualización de precios, este enlace ha expirado tras 30 días. Por favor, contacta a tu asesor para solicitar una versión actualizada.")
+                    st.warning(
+                        "Por seguridad y posible actualización de precios, este enlace ha expirado "
+                        f"tras {PDF_LINK_EXPIRY_DAYS} días. Por favor, contacta a tu asesor para "
+                        "solicitar una versión actualizada."
+                    )
                 else:
                     st.write(f"**Total:** {quote['currency']} {quote['total_amount']}")
                     pdf_url = quote.get("pdf_url")
-                    
                     if pdf_url:
-                        # Display the PDF in an iframe
                         st.components.v1.iframe(pdf_url, width=None, height=800, scrolling=True)
                         st.markdown(f"#### [🔗 Descargar documento original]({pdf_url})")
                     else:
@@ -131,128 +120,172 @@ if "doc" in query_params:
         else:
             st.error("Error de configuración de base de datos.")
     except Exception as e:
-        st.error(f"Error de conexión: {e}")
-    
-    # CRITICAL: Stop execution here to prevent loading the rest of the app
+        logger.error(f"Viewer error: {e}")
+        st.error("Error de conexión. Intenta de nuevo más tarde.")
+
     st.stop()
 
 # ==========================================
-# 🧠 SESSION STATE & PERFORMANCE CACHE
+# 🧠 SESSION STATE INITIALIZATION
 # ==========================================
-if 'cart' not in st.session_state:
-    st.session_state.cart = []
-if 'pdf_ready' not in st.session_state:
-    st.session_state.pdf_ready = False
-    st.session_state.pdf_bytes = None
-    st.session_state.wa_url = ""
-if 'user' not in st.session_state:
-    st.session_state.user = None
-if 'user_profile' not in st.session_state:
-    st.session_state.user_profile = {}
-if 'clients' not in st.session_state:
-    st.session_state.clients = []
-if 'show_welcome' not in st.session_state:
-    st.session_state.show_welcome = False
+_defaults = {
+    'cart': [],
+    'pdf_ready': False,
+    'pdf_bytes': None,
+    'wa_url': "",
+    'user': None,
+    'user_profile': {},
+    'clients': [],
+    'show_welcome': False,
+    'login_error': None,
+    'reg_msg': None,
+    'reg_error': None,
+    'recovery_code_sent': False,
+    'recovery_email': "",
+    'password_changed_success': False,
+    'user_data_loaded': False,  # 👈 Le fameux drapeau
+}
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
+# ==========================================
+# ⚙️ HELPERS
+# ==========================================
 @st.cache_data
-def get_base64_image(image_path):
-    with open(image_path, "rb") as img_file:
-        return base64.b64encode(img_file.read()).decode()
+def get_base64_image(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
 
-def fetch_user_data(force=False):
-    if st.session_state.user:
-        if force or not st.session_state.user_profile:
-            try:
-                res_prof = supabase.table("profiles").select("*").eq("id", st.session_state.user.id).execute()
-                if res_prof.data:
-                    st.session_state.user_profile = res_prof.data[0]
-                
-                res_cli = supabase.table("clients").select("*").eq("user_id", st.session_state.user.id).order("name").execute()
-                st.session_state.clients = res_cli.data if res_cli.data else []
-            except Exception as e:
-                print(f"Error fetching data: {e}")
 
-# ==========================================
-# ⚙️ IMAGE PROCESSING HELPER
-# ==========================================
-def process_image_for_pdf(image_input_stream):
+def fetch_user_data(force: bool = False):
+    if not st.session_state.user:
+        return
+    uid = st.session_state.user.id
+
+    # On utilise le flag pour ne pas requêter en boucle si l'utilisateur n'a pas de clients ([])
+    if force or not st.session_state.get('user_data_loaded'):
+        
+        # 1. Chargement du profil
+        try:
+            res = supabase.table("profiles").select("*").eq("id", uid).execute()
+            st.session_state.user_profile = res.data[0] if res.data else {}
+        except Exception as e:
+            logger.error(f"Profile fetch error: {e}")
+
+        # 2. Chargement des clients
+        try:
+            res = supabase.table("clients").select("*").eq("user_id", uid).order("name").execute()
+            st.session_state.clients = res.data if res.data else []
+        except Exception as e:
+            logger.error(f"Clients fetch error: {e}")
+            
+        # 3. Validation du chargement pour la session en cours
+        st.session_state.user_data_loaded = True
+
+
+def process_image_for_pdf(image_input_stream) -> io.BytesIO:
     try:
         img = Image.open(image_input_stream)
         if img.mode in ('RGBA', 'LA'):
-            background = Image.new('RGB', img.size, (255, 255, 255))
-            background.paste(img, mask=img.split()[3])
-            img = background
+            bg = Image.new('RGB', img.size, (255, 255, 255))
+            bg.paste(img, mask=img.split()[3])
+            img = bg
         elif img.mode != 'RGB':
             img = img.convert('RGB')
-            
+
         target_width = 500
         if img.width > target_width:
-            w_percent = (target_width / float(img.width))
-            h_size = int((float(img.height) * float(w_percent)))
-            img = img.resize((target_width, h_size), Image.Resampling.LANCZOS)
-            
-        compressed_stream = io.BytesIO()
-        img.save(compressed_stream, format='JPEG', quality=75, optimize=True)
-        compressed_stream.seek(0)
-        
-        return compressed_stream
+            ratio = target_width / float(img.width)
+            img = img.resize((target_width, int(img.height * ratio)), Image.Resampling.LANCZOS)
+
+        out = io.BytesIO()
+        img.save(out, format='JPEG', quality=75, optimize=True)
+        out.seek(0)
+        return out
     except Exception as e:
-        print(f"Error processing image: {e}")
+        logger.warning(f"Image processing failed: {e}")
         image_input_stream.seek(0)
         return image_input_stream
+
+
+def upload_pdf_to_storage(pdf_bytes: bytes, user_id: str) -> tuple[str, str]:
+    file_name = f"{user_id}/cotizacion_{int(datetime.now().timestamp())}.pdf"
+    supabase.storage.from_("quotations").upload(
+        file=pdf_bytes,
+        path=file_name,
+        file_options={"content-type": "application/pdf", "upsert": "true"}
+    )
+
+    try:
+        signed = supabase.storage.from_("quotations").create_signed_url(
+            file_name, PDF_SIGNED_URL_SECONDS
+        )
+        secure_url = signed.get("signedURL") or signed.get("signed_url", "")
+    except Exception as e:
+        logger.warning(f"Signed URL failed, falling back to public: {e}")
+        secure_url = ""
+
+    public_url = supabase.storage.from_("quotations").get_public_url(file_name)
+    return public_url, secure_url or public_url
+
 
 # ==========================================
 # ⚙️ PDF GENERATION ENGINE
 # ==========================================
-def generate_pdf(quote_data):
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
+def _draw_header(c, width, height, quote_data):
+    """Draw the top section: brand bar, title, date, logo or seller name."""
     brand_blue = (0.09, 0.44, 0.76)
-    
-    c.setFillColorRGB(brand_blue[0], brand_blue[1], brand_blue[2])
+    c.setFillColorRGB(*brand_blue)
     c.rect(0, height - 0.15 * inch, width, 0.15 * inch, fill=True, stroke=False)
     c.setFillColorRGB(0, 0, 0)
-    
+
     c.setFont("Helvetica-Bold", 22)
     c.drawString(1 * inch, height - 1.0 * inch, "Cotización")
     c.setFont("Helvetica", 10)
     c.drawString(1 * inch, height - 1.25 * inch, f"Fecha: {quote_data['date']}")
-    
-    logo_drawn = False
-    logo_w, logo_h = 2.2 * inch, 1.2 * inch 
+
+    logo_w, logo_h = 2.2 * inch, 1.2 * inch
     logo_x = width - 1 * inch - logo_w
     logo_y = height - 1.6 * inch
-    
-    image_stream_to_use = None
-    
+    logo_drawn = False
+
+    image_stream = None
     if quote_data.get('logo_file'):
-        image_stream_to_use = process_image_for_pdf(quote_data['logo_file'])
+        image_stream = process_image_for_pdf(quote_data['logo_file'])
     elif quote_data.get('logo_url'):
         try:
-            req = urllib.request.Request(quote_data['logo_url'], headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response:
-                remote_img_stream = io.BytesIO(response.read())
-                image_stream_to_use = process_image_for_pdf(remote_img_stream)
-        except: pass
+            req = urllib.request.Request(
+                quote_data['logo_url'], headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                image_stream = process_image_for_pdf(io.BytesIO(response.read()))
+        except Exception as e:
+            logger.warning(f"Logo download failed: {e}")
 
-    if image_stream_to_use:
+    if image_stream:
         try:
-            logo_img = ImageReader(image_stream_to_use)
-            c.drawImage(logo_img, logo_x, logo_y, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
+            c.drawImage(
+                ImageReader(image_stream), logo_x, logo_y,
+                width=logo_w, height=logo_h,
+                preserveAspectRatio=True, mask='auto'
+            )
             logo_drawn = True
-        except: pass
+        except Exception as e:
+            logger.warning(f"Logo draw failed: {e}")
 
     if not logo_drawn and quote_data.get('seller_name'):
         c.setFont("Helvetica-Bold", 16)
         tw = c.stringWidth(quote_data['seller_name'], "Helvetica-Bold", 16)
         c.drawString(width - 1 * inch - tw, height - 1.1 * inch, quote_data['seller_name'])
-    
-    y_pos = height - 1.9 * inch
+
+
+def _draw_client_info(c, y_pos, quote_data) -> float:
+    """Draw client block, return updated y_pos."""
     c.setFont("Helvetica", 12)
     c.drawString(1 * inch, y_pos, f"Cliente: {quote_data['client_name']}")
     y_pos -= 0.2 * inch
-    
+
     c.setFont("Helvetica", 10)
     if quote_data.get('display_phone'):
         c.drawString(1 * inch, y_pos, f"Tel / WhatsApp: {quote_data['display_phone']}")
@@ -260,7 +293,7 @@ def generate_pdf(quote_data):
     if quote_data.get('client_nit'):
         c.drawString(1 * inch, y_pos, f"NIT / ID Fiscal: {quote_data['client_nit']}")
         y_pos -= 0.2 * inch
-        
+
     if quote_data.get('vehicle_desc') or quote_data.get('vehicle_plate'):
         y_pos -= 0.1 * inch
         c.setFont("Helvetica-Bold", 10)
@@ -274,33 +307,42 @@ def generate_pdf(quote_data):
             c.drawString(1 * inch, y_pos, f"Placas: {quote_data['vehicle_plate']}")
             y_pos -= 0.2 * inch
 
+    return y_pos
+
+
+def _draw_items_table(c, y_pos, quote_data) -> float:
+    """Draw the items table header + rows, return updated y_pos."""
     y_pos -= 0.4 * inch
     c.setFillColorRGB(0.93, 0.93, 0.93)
     c.rect(1 * inch, y_pos - 0.08 * inch, 6.5 * inch, 0.25 * inch, fill=True, stroke=False)
-    
+
     c.setFillColorRGB(0, 0, 0)
     c.setFont("Helvetica-Bold", 10)
     c.drawString(1.1 * inch, y_pos, "Descripción")
     c.drawString(4.5 * inch, y_pos, "Cant.")
     c.drawString(5.5 * inch, y_pos, f"Total ({quote_data['currency']})")
-    
+
     y_pos -= 0.3 * inch
     c.setFont("Helvetica", 10)
-    
     for item in quote_data['cart']:
         c.drawString(1.1 * inch, y_pos, item['desc'][:45])
         c.drawString(4.5 * inch, y_pos, str(item['qty']))
         c.drawString(5.5 * inch, y_pos, f"{item['total']:.2f}")
         y_pos -= 0.25 * inch
 
+    return y_pos
+
+
+def _draw_totals(c, y_pos, quote_data) -> float:
+    """Draw totals, advance and balance sections."""
     y_pos -= 0.1 * inch
-    c.line(4 * inch, y_pos, 7.5 * inch, y_pos) 
-    y_pos -= 0.25 * inch 
-    
+    c.line(4 * inch, y_pos, 7.5 * inch, y_pos)
+    y_pos -= 0.25 * inch
+
     c.setFont("Helvetica-Bold", 11)
     c.drawString(4.2 * inch, y_pos, "Total:")
     c.drawString(5.5 * inch, y_pos, f"{quote_data['currency']} {quote_data['grand_total']:.2f}")
-    
+
     if quote_data.get('advance_amount', 0) > 0:
         y_pos -= 0.25 * inch
         c.setFont("Helvetica", 10)
@@ -311,23 +353,31 @@ def generate_pdf(quote_data):
         c.drawString(4.2 * inch, y_pos, "Saldo a Pagar:")
         c.drawString(5.5 * inch, y_pos, f"{quote_data['currency']} {quote_data['balance_due']:.2f}")
 
+    return y_pos
+
+
+def _draw_footer(c, width, quote_data):
+    """Draw payment info, terms and branding footer."""
     y_pos = 1.8 * inch
     c.setStrokeColorRGB(0.8, 0.8, 0.8)
     c.line(1 * inch, y_pos, 7.5 * inch, y_pos)
     c.setStrokeColorRGB(0, 0, 0)
     y_pos -= 0.2 * inch
-    
-    has_bank_details = quote_data.get('bank_name') and quote_data.get('account_number')
-    if has_bank_details:
+
+    if quote_data.get('bank_name') and quote_data.get('account_number'):
         c.setFont("Helvetica-Bold", 9)
         c.drawString(1 * inch, y_pos, "Información de Pago:")
         c.setFont("Helvetica", 9)
-        bank_str = f"{quote_data['bank_name']} - Cuenta {quote_data.get('account_type', 'Monetaria')} No. {quote_data['account_number']}"
+        bank_str = (
+            f"{quote_data['bank_name']} - Cuenta "
+            f"{quote_data.get('account_type', 'Monetaria')} "
+            f"No. {quote_data['account_number']}"
+        )
         if quote_data.get('account_name'):
             bank_str += f" (A nombre de: {quote_data['account_name']})"
         c.drawString(2.6 * inch, y_pos, bank_str)
         y_pos -= 0.2 * inch
-        
+
     if quote_data.get('terms'):
         c.setFont("Helvetica-Bold", 9)
         c.drawString(1 * inch, y_pos, "Condiciones:")
@@ -335,35 +385,83 @@ def generate_pdf(quote_data):
         c.drawString(2.6 * inch, y_pos, quote_data['terms'][:80])
 
     c.setFont("Helvetica-Oblique", 9)
-    c.setFillColorRGB(0.5, 0.5, 0.5) 
-    promo_text = "Generado con CotiListo.com"
-    tw = c.stringWidth(promo_text, "Helvetica-Oblique", 9)
-    c.drawString((width / 2) - (tw / 2), 0.5 * inch, promo_text)
-    
+    c.setFillColorRGB(0.5, 0.5, 0.5)
+    promo = "Generado con CotiListo.com"
+    tw = c.stringWidth(promo, "Helvetica-Oblique", 9)
+    c.drawString((width / 2) - (tw / 2), 0.5 * inch, promo)
+
+
+def generate_pdf(quote_data: dict) -> bytes:
+    """Assemble the full PDF and return bytes."""
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+
+    _draw_header(c, width, height, quote_data)
+    y_pos = _draw_client_info(c, height - 1.9 * inch, quote_data)
+    y_pos = _draw_items_table(c, y_pos, quote_data)
+    _draw_totals(c, y_pos, quote_data)
+    _draw_footer(c, width, quote_data)
+
     c.showPage()
     c.save()
     pdf_bytes = buffer.getvalue()
     buffer.close()
     return pdf_bytes
 
+
 # ==========================================
 # 📂 PAGE: GENERADOR
 # ==========================================
+TEMPLATES = {
+    "General": ["Producto básico", "Producto premium", "Servicio general", "Envío / Delivery", "Descuento especial"],
+    "Taller Mecánico / Motos": ["Diagnóstico general", "Servicio menor", "Servicio mayor", "Cambio de aceite y filtro", "Cambio de pastillas de freno", "Alineación y balanceo", "Revisión del sistema eléctrico", "Reparación de motor", "Limpieza de inyectores"],
+    "Odontología / Dentista": ["Consulta de evaluación", "Limpieza dental (Profilaxis)", "Relleno blanco (Resina)", "Extracción simple", "Extracción de cordal", "Blanqueamiento dental", "Tratamiento de canales", "Radiografía panorámica"],
+    "Clínica Médica": ["Consulta médica general", "Consulta con especialista", "Examen de laboratorio clínico", "Electrocardiograma", "Ultrasonido", "Certificado médico", "Aplicación de medicamento"],
+    "Construcción / Carpintería": ["Mano de obra (por día)", "Mano de obra (por obra)", "Instalación (m2)", "Fabricación de mueble a medida", "Pintura interior/exterior (m2)", "Reparación estructural", "Supervisión de obra", "Materiales varios"],
+    "Freelance / Servicios": ["Consultoría (por hora)", "Consultoría (por proyecto)", "Desarrollo de página web", "Diseño de logotipo", "Gestión de redes sociales (Mensual)", "Auditoría / Análisis", "Traducción de documentos"],
+    "Eventos / Catering": ["Menú por persona (Básico)", "Menú por persona (Premium)", "Alquiler de salón", "Alquiler de sillas y mesas", "Servicio de meseros", "Decoración floral", "Pastel personalizado", "Equipo de sonido"],
+}
+
+COUNTRY_CODES = {
+    "🇬🇹 +502": "502", "🇸🇻 +503": "503", "🇭🇳 +504": "504",
+    "🇲🇽 +52": "52", "🇺🇸 +1": "1", "Otra": "",
+}
+
+GUATEMALA_BANKS = [
+    "Banco Industrial (BI)", "Banco de Desarrollo Rural (Banrural)", "Banco G&T Continental",
+    "Banco Agromercantil de Guatemala (BAM)", "Banco de América Central (BAC Credomatic)",
+    "Banco de los Trabajadores (Bantrab)", "El Crédito Hipotecario Nacional (CHN)",
+    "Banco Promerica", "Banco Ficohsa", "Banco Inmobiliario", "Banco Internacional",
+    "Banco de Antigua", "Banco Azteca", "Banco Cuscatlán", "Vivibanco", "Banco INV",
+    "Banco Credicorp", "Banco Nexa", "Banco MultiMoney", "Citibank",
+    "Cooperativa Micoope", "Otra...",
+]
+
+
 def page_free_generator():
     if st.session_state.get('show_welcome'):
         st.toast("¡Conexión exitosa!", icon="👋")
-        st.session_state.show_welcome = False 
+        st.session_state.show_welcome = False
 
     fetch_user_data()
     profile = st.session_state.user_profile
 
     if os.path.exists("logo_cotilisto.png"):
         img_b64 = get_base64_image("logo_cotilisto.png")
-        st.markdown(f'<div style="text-align: center; margin-top: 0px; padding-bottom: 5px;"><img src="data:image/png;base64,{img_b64}" width="160"></div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="text-align:center;margin-top:0px;padding-bottom:5px;">'
+            f'<img src="data:image/png;base64,{img_b64}" width="160"></div>',
+            unsafe_allow_html=True
+        )
     else:
-        st.markdown("<h1 style='text-align: center; margin-top: 0px;'>CotiListo</h1>", unsafe_allow_html=True)
-    
-    st.markdown("<h3 style='text-align: center; color: #555; margin-top: 0px; margin-bottom: 20px;'>Crea tu cotización en segundos</h3>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align:center;margin-top:0px;'>CotiListo</h1>", unsafe_allow_html=True)
+
+    st.markdown(
+        "<h3 style='text-align:center;color:#555;margin-top:0px;margin-bottom:20px;'>"
+        "Crea tu cotización en segundos</h3>",
+        unsafe_allow_html=True
+    )
 
     if not st.session_state.user:
         with st.container(border=True):
@@ -371,24 +469,26 @@ def page_free_generator():
             st.write("Guarda tu logo, arma tu catálogo de precios y guarda tu historial. **¡Únete gratis!** 🚀")
             st.page_link(page_log, label="Crear cuenta gratis / Entrar", icon="✨")
 
+    # --- Currency & template ---
     default_currency = profile.get("currency", "Q")
     if st.session_state.user:
         col1, col2 = st.columns([1, 2])
-        currency = col1.radio("Moneda:", ["Q", "$"], index=0 if default_currency=="Q" else 1, horizontal=True)
+        currency = col1.radio("Moneda:", ["Q", "$"], index=0 if default_currency == "Q" else 1, horizontal=True)
         col2.info(f"✨ Modo personalizado: **{profile.get('business_name', 'tu negocio')}**")
         template = "Personalizado"
     else:
         col1, col2 = st.columns(2)
         currency = col1.radio("Moneda:", ["Q", "$"], horizontal=True)
-        template = col2.selectbox("Tipo de negocio:", ["General", "Taller Mecánico / Motos", "Odontología / Dentista", "Clínica Médica", "Construcción / Carpintería", "Freelance / Servicios", "Eventos / Catering"])
+        template = col2.selectbox("Tipo de negocio:", list(TEMPLATES.keys()))
 
     st.divider()
 
+    # --- Seller info ---
     st.markdown("### 🏢 Tu Negocio (Vendedor)")
     seller_name = st.text_input("Tu Nombre o el de tu Negocio", value=profile.get("business_name", ""), placeholder="Ej: Talleres San José")
     uploaded_logo = None
     db_logo_url = profile.get("logo_url", "")
-    
+
     if db_logo_url:
         st.success("✅ Logo cargado automáticamente.")
     else:
@@ -396,99 +496,81 @@ def page_free_generator():
 
     st.divider()
 
+    # --- Client info ---
     st.markdown("### 👤 Datos del Cliente")
-    country_codes = {"🇬🇹 +502": "502", "🇸🇻 +503": "503", "🇭🇳 +504": "504", "🇲🇽 +52": "52", "🇺🇸 +1": "1", "Otra": ""}
-    
-    c_email = "" # Initialize empty
-    
+
+    # Initialize all client fields with safe defaults
+    c_name = ""
+    c_phone = ""
+    c_email = ""
+    c_nit = ""
+    phone_prefix = "502"
+    selected_country = "🇬🇹 +502"
+
     if st.session_state.user and st.session_state.clients:
         client_options = ["➕ Crear nuevo..."] + [c['name'] for c in st.session_state.clients]
         sel_c = st.selectbox("Buscar cliente:", client_options)
-        
+
         if sel_c == "➕ Crear nuevo...":
             c_name = st.text_input("Nombre Cliente")
-            col_cc, col_phone = st.columns([1, 2])
-            with col_cc:
-                selected_country = st.selectbox("País", list(country_codes.keys()))
-                phone_prefix = country_codes[selected_country]
-            with col_phone:
-                c_phone = st.text_input("WhatsApp / Teléfono")
-                
-            col_email, col_nit = st.columns(2)
-            with col_email:
-                c_email = st.text_input("Email (Opcional)", placeholder="ejemplo@correo.com")
-            with col_nit:
-                c_nit = st.text_input("NIT / ID Fiscal")
+            col_cc, col_phone_input = st.columns([1, 2])
+            selected_country = col_cc.selectbox("País", list(COUNTRY_CODES.keys()))
+            phone_prefix = COUNTRY_CODES[selected_country]
+            c_phone = col_phone_input.text_input("WhatsApp / Teléfono")
+            col_email_input, col_nit_input = st.columns(2)
+            c_email = col_email_input.text_input("Email (Opcional)", placeholder="ejemplo@correo.com")
+            c_nit = col_nit_input.text_input("NIT / ID Fiscal")
         else:
-            c_data = next(c for c in st.session_state.clients if c['name'] == sel_c)
+            c_data = next((c for c in st.session_state.clients if c['name'] == sel_c), {})
             c_name = sel_c
             st.info("💡 Autocompletado desde tu base de clientes.")
-            
-            col_cc, col_phone = st.columns([1, 2])
-            with col_cc:
-                selected_country = st.selectbox("País", list(country_codes.keys()))
-                phone_prefix = country_codes[selected_country]
-            with col_phone:
-                c_phone = st.text_input("WhatsApp / Teléfono", value=c_data.get('phone', ''))
-            
-            col_email, col_nit = st.columns(2)
-            with col_email:
-                c_email = st.text_input("Email (Opcional)", value=c_data.get('email', ''))
-            with col_nit:
-                c_nit = st.text_input("NIT / ID Fiscal", value=c_data.get('nit', ''))
+            col_cc, col_phone_input = st.columns([1, 2])
+            selected_country = col_cc.selectbox("País", list(COUNTRY_CODES.keys()))
+            phone_prefix = COUNTRY_CODES[selected_country]
+            c_phone = col_phone_input.text_input("WhatsApp / Teléfono", value=c_data.get('phone', ''))
+            col_email_input, col_nit_input = st.columns(2)
+            c_email = col_email_input.text_input("Email (Opcional)", value=c_data.get('email', ''))
+            c_nit = col_nit_input.text_input("NIT / ID Fiscal", value=c_data.get('nit', ''))
     else:
         c_name = st.text_input("Nombre Cliente", placeholder="Ej: Maria Lopez")
-        col_cc, col_phone = st.columns([1, 2])
-        with col_cc:
-            selected_country = st.selectbox("País", list(country_codes.keys()))
-            phone_prefix = country_codes[selected_country]
-        with col_phone:
-            c_phone = st.text_input("WhatsApp / Teléfono", placeholder="Ej: 55551234")
-            
-        col_email, col_nit = st.columns(2)
-        with col_email:
-            c_email = st.text_input("Email (Opcional)", placeholder="ejemplo@correo.com")
-        with col_nit:
-            c_nit = st.text_input("NIT / ID Fiscal", placeholder="Ej: 1234567-8")
+        col_cc, col_phone_input = st.columns([1, 2])
+        selected_country = col_cc.selectbox("País", list(COUNTRY_CODES.keys()))
+        phone_prefix = COUNTRY_CODES[selected_country]
+        c_phone = col_phone_input.text_input("WhatsApp / Teléfono", placeholder="Ej: 55551234")
+        col_email_input, col_nit_input = st.columns(2)
+        c_email = col_email_input.text_input("Email (Opcional)", placeholder="ejemplo@correo.com")
+        c_nit = col_nit_input.text_input("NIT / ID Fiscal", placeholder="Ej: 1234567-8")
 
+    # --- Vehicle fields (mechanic template only) ---
     vehicle_desc, vehicle_plate = "", ""
     if template == "Taller Mecánico / Motos":
         st.divider()
         st.markdown("### 🚗 Datos del Vehículo")
         col_v1, col_v2 = st.columns(2)
-        with col_v1:
-            vehicle_desc = st.text_input("Marca, Modelo", placeholder="Ej: Toyota Hilux")
-        with col_v2:
-            vehicle_plate = st.text_input("Placas", placeholder="Ej: P-123ABC")
+        vehicle_desc = col_v1.text_input("Marca, Modelo", placeholder="Ej: Toyota Hilux")
+        vehicle_plate = col_v2.text_input("Placas", placeholder="Ej: P-123ABC")
 
     st.divider()
 
+    # --- Items ---
     st.markdown("### 🛒 Productos o Servicios")
     catalog_options = ["Escribir manualmente..."]
     custom_catalog_map = {}
-    
+
     if profile.get("catalog"):
         for item in profile["catalog"]:
-            catalog_options.append(f"⭐ {item['desc']}")
-            custom_catalog_map[f"⭐ {item['desc']}"] = item['price']
+            label = f"⭐ {item['desc']}"
+            catalog_options.append(label)
+            custom_catalog_map[label] = item['price']
 
-    if template == "General":
-        catalog_options += ["Producto básico", "Producto premium", "Servicio general", "Envío / Delivery", "Descuento especial"]
-    elif template == "Taller Mecánico / Motos":
-        catalog_options += ["Diagnóstico general", "Servicio menor", "Servicio mayor", "Cambio de aceite y filtro", "Cambio de pastillas de freno", "Alineación y balanceo", "Revisión del sistema eléctrico", "Reparación de motor", "Limpieza de inyectores"]
-    elif template == "Odontología / Dentista":
-        catalog_options += ["Consulta de evaluación", "Limpieza dental (Profilaxis)", "Relleno blanco (Resina)", "Extracción simple", "Extracción de cordal", "Blanqueamiento dental", "Tratamiento de canales", "Radiografía panorámica"]
-    elif template == "Clínica Médica":
-        catalog_options += ["Consulta médica general", "Consulta con especialista", "Examen de laboratorio clínico", "Electrocardiograma", "Ultrasonido", "Certificado médico", "Aplicación de medicamento"]
-    elif template == "Construcción / Carpintería":
-        catalog_options += ["Mano de obra (por día)", "Mano de obra (por obra)", "Instalación (m2)", "Fabricación de mueble a medida", "Pintura interior/exterior (m2)", "Reparación estructural", "Supervisión de obra", "Materiales varios"]
-    elif template == "Freelance / Servicios":
-        catalog_options += ["Consultoría (por hora)", "Consultoría (por proyecto)", "Desarrollo de página web", "Diseño de logotipo", "Gestión de redes sociales (Mensual)", "Auditoría / Análisis", "Traducción de documentos"]
-    elif template == "Eventos / Catering":
-        catalog_options += ["Menú por persona (Básico)", "Menú por persona (Premium)", "Alquiler de salón", "Alquiler de sillas y mesas", "Servicio de meseros", "Decoración floral", "Pastel personalizado", "Equipo de sonido"]
+    template_items = TEMPLATES.get(template, [])
+    catalog_options += template_items
 
     selected_item = st.selectbox("Selecciona un servicio:", catalog_options)
-    auto_desc = selected_item.replace("⭐ ", "") if selected_item in custom_catalog_map else (selected_item if selected_item != "Escribir manualmente..." else "")
+    auto_desc = (
+        selected_item.replace("⭐ ", "") if selected_item in custom_catalog_map
+        else (selected_item if selected_item != "Escribir manualmente..." else "")
+    )
     auto_price = float(custom_catalog_map.get(selected_item, 0.0))
 
     item_desc = st.text_input("Descripción", value=auto_desc)
@@ -498,30 +580,30 @@ def page_free_generator():
 
     if st.button("➕ Agregar"):
         if item_desc and item_price > 0:
-            st.session_state.cart.append({"desc": item_desc, "qty": item_qty, "price": item_price, "total": item_qty * item_price})
+            st.session_state.cart.append({
+                "desc": item_desc, "qty": item_qty,
+                "price": item_price, "total": item_qty * item_price
+            })
             st.session_state.pdf_ready = False
         else:
-            st.warning("Completa los datos.")
+            st.warning("Completa la descripción y el precio.")
 
     total = 0.0
     if st.session_state.cart:
         st.markdown("#### 📋 Tu Lista:")
         for i, it in enumerate(st.session_state.cart):
             col_c1, col_c2, col_c3 = st.columns([4, 2, 1])
-            with col_c1:
-                st.write(f"**{it['qty']}x** {it['desc']}")
-            with col_c2:
-                st.write(f"{currency} {it['total']:.2f}")
-            with col_c3:
-                if st.button("❌", key=f"del_{i}"):
-                    st.session_state.cart.pop(i)
-                    st.session_state.pdf_ready = False
-                    st.rerun()
+            col_c1.write(f"**{it['qty']}x** {it['desc']}")
+            col_c2.write(f"{currency} {it['total']:.2f}")
+            if col_c3.button("❌", key=f"del_{i}"):
+                st.session_state.cart.pop(i)
+                st.session_state.pdf_ready = False
+                st.rerun()
             total += it['total']
 
     st.divider()
     st.markdown(f"#### Total: {currency} {total:.2f}")
-    
+
     require_advance = st.checkbox("Requerir Anticipo")
     advance_amount, balance_due = 0.0, total
     if require_advance and total > 0:
@@ -532,131 +614,123 @@ def page_free_generator():
 
     st.divider()
 
-    # --- STEP C: QUOTE PREPARATION & CLOUD UPLOAD ---
+    # --- Generate ---
     if st.button("Preparar Cotización ✨", type="primary", use_container_width=True):
-        if not c_name or not st.session_state.cart:
-            st.error("Faltan datos.")
+        if not c_name:
+            st.error("Por favor ingresa el nombre del cliente.")
+        elif not st.session_state.cart:
+            st.error("Agrega al menos un producto o servicio.")
         else:
-            # Format phone for display
-            display_phone = f"+{phone_prefix} {c_phone}" if c_phone and phone_prefix else c_phone
-            
-            # Prepare data object for PDF generation
+            display_phone = f"+{phone_prefix} {c_phone}".strip() if c_phone and phone_prefix else c_phone
+            currency_symbol = "Q" if "Q" in currency else "$"
+
             q_data = {
-                "date": datetime.now().strftime("%d/%m/%Y"), 
-                "client_name": c_name, 
-                "display_phone": display_phone, 
-                "client_nit": c_nit, 
-                "currency": "Q" if "Q" in currency else "$", 
-                "cart": st.session_state.cart, 
-                "grand_total": total, 
-                "advance_amount": advance_amount, 
+                "date": datetime.now().strftime("%d/%m/%Y"),
+                "client_name": c_name,
+                "display_phone": display_phone,
+                "client_nit": c_nit,
+                "currency": currency_symbol,
+                "cart": st.session_state.cart,
+                "grand_total": total,
+                "advance_amount": advance_amount,
                 "balance_due": balance_due,
-                "vehicle_desc": vehicle_desc, 
+                "vehicle_desc": vehicle_desc,
                 "vehicle_plate": vehicle_plate,
-                "seller_name": seller_name, 
-                "logo_file": uploaded_logo, 
+                "seller_name": seller_name,
+                "logo_file": uploaded_logo,
                 "logo_url": db_logo_url,
-                "bank_name": profile.get('bank_name'), 
+                "bank_name": profile.get('bank_name'),
                 "account_type": profile.get('account_type'),
-                "account_number": profile.get('account_number'), 
-                "account_name": profile.get('account_name'), 
-                "terms": profile.get('terms_conditions')
+                "account_number": profile.get('account_number'),
+                "account_name": profile.get('account_name'),
+                "terms": profile.get('terms_conditions'),
             }
-            
-            # Generate PDF in memory
-            st.session_state.pdf_bytes = generate_pdf(q_data)
-            st.session_state.pdf_ready = True
-            pdf_public_url = ""
-            smart_url = ""
-            
-            if st.session_state.user:
-                try:
-                    # 1. Upload PDF to Supabase Storage
-                    file_name = f"{st.session_state.user.id}/cotizacion_{int(datetime.now().timestamp())}.pdf"
-                    supabase.storage.from_("quotations").upload(
-                        file=st.session_state.pdf_bytes,
-                        path=file_name,
-                        file_options={"content-type": "application/pdf", "upsert": "true"}
+
+            with st.spinner("Generando cotización..."):
+                st.session_state.pdf_bytes = generate_pdf(q_data)
+                st.session_state.pdf_ready = True
+                pdf_public_url = ""
+                smart_url = ""
+
+                if st.session_state.user:
+                    try:
+                        db_quote_data = {k: v for k, v in q_data.items() if k != 'logo_file'}
+                        _, secure_pdf_url = upload_pdf_to_storage(
+                            st.session_state.pdf_bytes, st.session_state.user.id
+                        )
+
+                        res = supabase.table("quotes").insert({
+                            "user_id": st.session_state.user.id,
+                            "client_name": c_name,
+                            "total_amount": total,
+                            "currency": currency_symbol,
+                            "quote_data": db_quote_data,
+                            "pdf_url": secure_pdf_url,
+                        }).execute()
+
+                        quote_id = res.data[0]['id']
+                        smart_url = f"{BASE_URL}/?doc={quote_id}"
+
+                        # Upsert client
+                        existing_client = next(
+                            (c for c in st.session_state.clients if c['name'] == c_name), None
+                        )
+                        client_payload = {
+                            "user_id": st.session_state.user.id,
+                            "name": c_name, "phone": c_phone,
+                            "email": c_email, "nit": c_nit,
+                        }
+                        if existing_client:
+                            client_payload["id"] = existing_client["id"]
+                        supabase.table("clients").upsert(client_payload).execute()
+                        fetch_user_data(force=True)
+
+                    except Exception as e:
+                        logger.error(f"DB/Storage error: {e}")
+                        st.warning("Cotización generada localmente (error al guardar en la nube).")
+
+                # Build WhatsApp URL
+                if c_phone:
+                    clean_phone = ''.join(filter(str.isdigit, c_phone))
+                    full_number = f"{phone_prefix}{clean_phone}"
+                    wa_msg = (
+                        f"¡Hola {c_name}! 👋 Te comparto la cotización de "
+                        f"{seller_name or 'nuestro servicio'}. "
+                        f"El total es de {currency_symbol} {total:.2f}."
                     )
-                    
-                    # 2. Get the permanent public storage URL
-                    pdf_public_url = supabase.storage.from_("quotations").get_public_url(file_name)
-                    
-                    # 3. Clean data for Database insertion
-                    db_quote_data = q_data.copy()
-                    db_quote_data.pop('logo_file', None)
-                    
-                    # 4. Save quote to DB and retrieve the generated ID for the viewer
-                    res = supabase.table("quotes").insert({
-                        "user_id": st.session_state.user.id, 
-                        "client_name": c_name, 
-                        "total_amount": total, 
-                        "currency": q_data["currency"], 
-                        "quote_data": db_quote_data,
-                        "pdf_url": pdf_public_url 
-                    }).execute()
-                    
-                    # 5. Generate the professional "SaaS" URL for the client
-                    quote_id = res.data[0]['id']
-                    
-                    # 🌐 TON DOMAINE OFFICIEL
-                    base_url = "https://app.cotilisto.com" 
-                    smart_url = f"{base_url}/?doc={quote_id}"
-                    
-                    # 6. Update or Create client record
-                    existing_client = next((c for c in st.session_state.clients if c['name'] == c_name), None)
-                    client_payload = {
-                        "user_id": st.session_state.user.id, 
-                        "name": c_name, 
-                        "phone": c_phone, 
-                        "email": c_email,  
-                        "nit": c_nit
-                    }
-                    if existing_client:
-                        client_payload["id"] = existing_client["id"]
-                    supabase.table("clients").upsert(client_payload).execute()
-                    
-                    fetch_user_data(force=True)
-                except Exception as e:
-                    print(f"DB/Storage Error: {e}")
-            
-            # --- WHATSAPP MESSAGE GENERATION ---
-            if c_phone:
-                clean_phone = ''.join(filter(str.isdigit, c_phone))
-                full_wa_number = f"{phone_prefix}{clean_phone}"
-                
-                wa_message = f"¡Hola {c_name}! 👋 Te comparto la cotización de {seller_name if seller_name else 'nuestro servicio'}. El total es de {q_data['currency']} {total:.2f}. "
-                
-                if smart_url:
-                    wa_message += f"\n\n📄 Puedes ver y descargar tu documento aquí:\n{smart_url}"
+                    if smart_url:
+                        wa_msg += f"\n\n📄 Ver y descargar tu documento aquí:\n{smart_url}"
+                    else:
+                        wa_msg += "\n\n(Regístrate en CotiListo para enviar el PDF por enlace directo)."
+                    st.session_state.wa_url = (
+                        f"https://wa.me/{full_number}?text={urllib.parse.quote(wa_msg.encode('utf-8'))}"
+                    )
                 else:
-                    wa_message += "\n\n(Regístrate en CotiListo para enviar el PDF por enlace directo)."
-                
-                # 🛡️ EMOJI FIX: We force the encoding to UTF-8
-                wa_encoded = urllib.parse.quote(wa_message.encode('utf-8'))
-                st.session_state.wa_url = f"https://wa.me/{full_wa_number}?text={wa_encoded}"
-            else:
-                st.session_state.wa_url = ""
-            
+                    st.session_state.wa_url = ""
+
             st.balloons()
 
+    # --- Action buttons ---
     if st.session_state.get('pdf_ready'):
         st.success(f"¡Cotización lista para {c_name}!")
         col_act1, col_act2 = st.columns(2)
         with col_act1:
-            st.download_button(
-                label="1️⃣ Descargar PDF", 
-                data=st.session_state.pdf_bytes, 
-                file_name=f"Cotizacion_{c_name.replace(' ', '_')}.pdf", 
-                mime="application/pdf", 
-                use_container_width=True
-            )
-        with col_act2:
             if st.session_state.get('wa_url'):
-                st.link_button("2️⃣ Enviar WhatsApp 💬", st.session_state.wa_url, use_container_width=True)
+                st.link_button("Enviar WhatsApp 💬", st.session_state.wa_url, use_container_width=True)
+            else:
+                st.warning("Sin número de teléfono para WhatsApp.")
+        with col_act2:
+            st.download_button(
+                label="Descargar PDF 📥",
+                data=st.session_state.pdf_bytes,
+                file_name=f"Cotizacion_{c_name.replace(' ', '_')}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
 
 # ==========================================
-# 🗂️ PAGE: HISTORY (DASHBOARD)
+# 🗂️ PAGE: HISTORY
 # ==========================================
 def page_history():
     st.title("🗂️ Historial de Cotizaciones")
@@ -667,91 +741,68 @@ def page_history():
         return
 
     try:
-        # Fetch all quotes for the current user, newest first
-        res = supabase.table("quotes").select("*").eq("user_id", st.session_state.user.id).order("created_at", desc=True).execute()
+        res = supabase.table("quotes").select("*") \
+            .eq("user_id", st.session_state.user.id) \
+            .order("created_at", desc=True) \
+            .execute()
         quotes = res.data
-
-        if not quotes:
-            st.info("Aún no has creado ninguna cotización.")
-            return
-
-        for q in quotes:
-            q_data = q.get("quote_data", {})
-            client_name = q.get("client_name", "Cliente")
-            total_amount = q.get("total_amount", 0)
-            currency = q.get("currency", "$")
-            doc_id = q.get("id")
-            
-            # Calculate quote age
-            created_date = datetime.fromisoformat(q['created_at'].replace("Z", "+00:00"))
-            days_old = (datetime.now(timezone.utc) - created_date).days
-            
-            # Use expander to keep the UI clean
-            with st.expander(f"📄 {client_name} - {currency} {total_amount} (Hace {days_old} días)"):
-                col1, col2, col3 = st.columns(3)
-                
-                # 🌐 YOUR OFFICIAL DOMAIN
-                base_url = "https://app.cotilisto.com" 
-                smart_url = f"{base_url}/?doc={doc_id}"
-
-                if days_old > 30:
-                    st.error("⚠️ Este enlace ha expirado para el cliente (>30 días)")
-                    
-                    # --- REGENERATION MAGIC ---
-                    if st.button("🔄 Regenerar Cotización", key=f"regen_{doc_id}", use_container_width=True):
-                        try:
-                            # 1. Regenerate PDF from saved JSON data
-                            new_pdf_bytes = generate_pdf(q_data)
-                            
-                            # 2. Upload new PDF
-                            file_name = f"{st.session_state.user.id}/cotizacion_{int(datetime.now().timestamp())}.pdf"
-                            supabase.storage.from_("quotations").upload(
-                                file=new_pdf_bytes, 
-                                path=file_name, 
-                                file_options={"content-type": "application/pdf"}
-                            )
-                            new_pdf_url = supabase.storage.from_("quotations").get_public_url(file_name)
-                            
-                            # 3. Update DB (New URL & Reset created_at to NOW)
-                            supabase.table("quotes").update({
-                                "pdf_url": new_pdf_url,
-                                "created_at": datetime.now(timezone.utc).isoformat()
-                            }).eq("id", doc_id).execute()
-                            
-                            st.success("¡Cotización actualizada! La página se recargará.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error al regenerar: {e}")
-                else:
-                    # --- ACTIVE QUOTE ACTIONS ---
-                    with col1:
-                        # 1. View Viewer Page
-                        st.link_button("👁️ Ver Enlace", smart_url, use_container_width=True)
-                    
-                    with col2:
-                        # 2. Smart WhatsApp Follow-up (No emojis in the URL text)
-                        client_phone = q_data.get("display_phone", "")
-                        if client_phone:
-                            clean_phone = ''.join(filter(str.isdigit, client_phone))
-                            
-                            # Clean text without emojis to ensure 100% URL compatibility
-                            wa_msg = f"¡Hola {client_name}! Te comparto nuevamente el enlace de tu cotización:\n{smart_url}"
-                            
-                            wa_encoded = urllib.parse.quote(wa_msg)
-                            wa_url = f"https://wa.me/{clean_phone}?text={wa_encoded}"
-                            
-                            st.link_button("💬 WhatsApp", wa_url, use_container_width=True)
-                        else:
-                            st.button("💬 WhatsApp", disabled=True, key=f"wa_dis_{doc_id}", help="No hay teléfono registrado", use_container_width=True)
-                    
-                    with col3:
-                        # 3. Native Email Draft
-                        subject = urllib.parse.quote(f"Tu Cotización - {client_name}")
-                        body = urllib.parse.quote(f"Hola {client_name},\n\nAdjunto el enlace a tu cotización segura:\n{smart_url}\n\nSaludos cordiales,")
-                        st.link_button("📧 Enviar Email", f"mailto:?subject={subject}&body={body}", use_container_width=True)
-
     except Exception as e:
-        st.error(f"Error cargando el historial: {e}")
+        logger.error(f"History fetch error: {e}")
+        st.error("Error cargando el historial.")
+        return
+
+    if not quotes:
+        st.info("Aún no has creado ninguna cotización.")
+        return
+
+    for q in quotes:
+        q_data = q.get("quote_data", {})
+        client_name = q.get("client_name", "Cliente")
+        total_amount = q.get("total_amount", 0)
+        currency = q.get("currency", "$")
+        doc_id = q.get("id")
+
+        created_date = datetime.fromisoformat(q['created_at'].replace("Z", "+00:00"))
+        days_old = (datetime.now(timezone.utc) - created_date).days
+        smart_url = f"{BASE_URL}/?doc={doc_id}"
+
+        with st.expander(f"📄 {client_name} — {currency} {total_amount} (Hace {days_old} días)"):
+            if days_old > PDF_LINK_EXPIRY_DAYS:
+                st.error("⚠️ Este enlace ha expirado para el cliente (>30 días)")
+                if st.button("🔄 Regenerar Cotización", key=f"regen_{doc_id}", use_container_width=True):
+                    try:
+                        new_pdf_bytes = generate_pdf(q_data)
+                        _, new_secure_url = upload_pdf_to_storage(new_pdf_bytes, st.session_state.user.id)
+                        supabase.table("quotes").update({
+                            "pdf_url": new_secure_url,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                        }).eq("id", doc_id).execute()
+                        st.success("¡Cotización regenerada!")
+                        st.rerun()
+                    except Exception as e:
+                        logger.error(f"Regen error: {e}")
+                        st.error("Error al regenerar.")
+            else:
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.link_button("👁️ Ver Enlace", smart_url, use_container_width=True)
+                with col2:
+                    client_phone = q_data.get("display_phone", "")
+                    if client_phone:
+                        clean_phone = ''.join(filter(str.isdigit, client_phone))
+                        wa_msg = f"¡Hola {client_name}! Te comparto nuevamente el enlace de tu cotización:\n{smart_url}"
+                        wa_url = f"https://wa.me/{clean_phone}?text={urllib.parse.quote(wa_msg)}"
+                        st.link_button("💬 WhatsApp", wa_url, use_container_width=True)
+                    else:
+                        st.button("💬 WhatsApp", disabled=True, key=f"wa_dis_{doc_id}",
+                                  help="No hay teléfono registrado", use_container_width=True)
+                with col3:
+                    subject = urllib.parse.quote(f"Tu Cotización - {client_name}")
+                    body = urllib.parse.quote(
+                        f"Hola {client_name},\n\nAdjunto el enlace a tu cotización segura:\n{smart_url}\n\nSaludos cordiales,"
+                    )
+                    st.link_button("📧 Email", f"mailto:?subject={subject}&body={body}", use_container_width=True)
+
 
 # ==========================================
 # 👥 PAGE: CLIENTES
@@ -760,28 +811,32 @@ def page_clients():
     st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
     st.title("👥 Mis Clientes")
     if not st.session_state.user:
-        return st.warning("Inicia sesión para ver tus clientes.")
+        st.warning("Inicia sesión para ver tus clientes.")
+        return
 
     fetch_user_data()
     if not st.session_state.clients:
-        return st.info("No tienes clientes guardados.")
-    
+        st.info("No tienes clientes guardados.")
+        return
+
     for c in st.session_state.clients:
         with st.container(border=True):
             with st.expander(f"👤 **{c['name']}**"):
                 new_phone = st.text_input("Teléfono", value=c.get('phone', ''), key=f"p_{c['id']}")
-                new_email = st.text_input("Email (Opcional)", value=c.get('email', ''), key=f"e_{c['id']}")
+                new_email = st.text_input("Email", value=c.get('email', ''), key=f"e_{c['id']}")
                 new_nit = st.text_input("NIT / ID Fiscal", value=c.get('nit', ''), key=f"n_{c['id']}")
-                
                 if st.button("💾 Guardar", key=f"btn_{c['id']}"):
-                    supabase.table("clients").update({
-                        "phone": new_phone, 
-                        "email": new_email,
-                        "nit": new_nit
-                    }).eq("id", c['id']).execute()
-                    fetch_user_data(force=True)
-                    st.success("¡Actualizado!")
-                    st.rerun()
+                    try:
+                        supabase.table("clients").update({
+                            "phone": new_phone, "email": new_email, "nit": new_nit
+                        }).eq("id", c['id']).execute()
+                        fetch_user_data(force=True)
+                        st.success("¡Actualizado!")
+                        st.rerun()
+                    except Exception as e:
+                        logger.error(f"Client update error: {e}")
+                        st.error("Error al guardar.")
+
 
 # ==========================================
 # ⚙️ PAGE: PERFIL
@@ -790,60 +845,70 @@ def page_profile():
     st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
     st.title("⚙️ Mi Perfil")
     if not st.session_state.user:
-        return st.warning("Inicia sesión para configurar tu perfil.")
+        st.warning("Inicia sesión para configurar tu perfil.")
+        return
 
     fetch_user_data()
     profile = st.session_state.user_profile
-    catalog = profile.get("catalog", [])
-    
+    catalog = list(profile.get("catalog", []))  # mutable copy
+
     with st.expander("🏢 Negocio, Logo y Banco", expanded=True):
         name = st.text_input("Nombre del Negocio", value=profile.get('business_name', ''))
-        
         current_logo = profile.get("logo_url", "")
         if current_logo:
             st.image(current_logo, width=150, caption="Logo Actual")
         new_logo = st.file_uploader("Subir/Actualizar Logo (PNG, JPG - Máx 2MB)", type=["png", "jpg", "jpeg"])
-        
+
         st.markdown("**🏦 Información de Pago**")
-        guatemala_banks = ["Banco Industrial (BI)", "Banco de Desarrollo Rural (Banrural)", "Banco G&T Continental", "Banco Agromercantil de Guatemala (BAM)", "Banco de América Central (BAC Credomatic)", "Banco de los Trabajadores (Bantrab)", "El Crédito Hipotecario Nacional (CHN)", "Banco Promerica", "Banco Ficohsa", "Banco Inmobiliario", "Banco Internacional", "Banco de Antigua", "Banco Azteca", "Banco Cuscatlán", "Vivibanco", "Banco INV", "Banco Credicorp", "Banco Nexa", "Banco MultiMoney", "Citibank", "Cooperativa Micoope", "Otra..."]
         current_bank = profile.get('bank_name', '')
-        bank_index = guatemala_banks.index(current_bank) if current_bank in guatemala_banks else 0
-        bank_name = st.selectbox("Banco", guatemala_banks, index=bank_index)
-        
-        acc_type = st.radio("Tipo de Cuenta", ["Monetaria", "Ahorro"], index=0 if profile.get('account_type') == "Monetaria" else 1, horizontal=True)
+        bank_index = GUATEMALA_BANKS.index(current_bank) if current_bank in GUATEMALA_BANKS else 0
+        bank_name = st.selectbox("Banco", GUATEMALA_BANKS, index=bank_index)
+        acc_type = st.radio("Tipo de Cuenta", ["Monetaria", "Ahorro"],
+                            index=0 if profile.get('account_type') == "Monetaria" else 1, horizontal=True)
         acc_num = st.text_input("Número de Cuenta", value=profile.get('account_number', ''))
         acc_name = st.text_input("Nombre en la Cuenta", value=profile.get('account_name', ''))
-        
+
         st.markdown("**📜 Condiciones**")
-        st.info("💡 **Ejemplos rápidos (Copia y pega):**\n"
-                "**1. Servicios:** *Cotización válida por 15 días. Anticipo del 50% no reembolsable para agendar. Saldo al finalizar.*\n"
-                "**2. Productos:** *Precios sujetos a cambios. Garantía de 30 días contra defectos de fábrica. No se aceptan devoluciones.*")
+        st.info(
+            "💡 **Ejemplos rápidos:**\n"
+            "**Servicios:** *Cotización válida por 15 días. Anticipo del 50% no reembolsable para agendar.*\n"
+            "**Productos:** *Precios sujetos a cambios. Garantía de 30 días contra defectos de fábrica.*"
+        )
         terms = st.text_area("Condiciones", value=profile.get('terms_conditions', ''))
-        
+
         if st.button("💾 Guardar Cambios", type="primary"):
             final_logo_url = current_logo
             if new_logo:
-                file_ext = new_logo.name.split('.')[-1]
+                file_ext = new_logo.name.split('.')[-1].lower()
                 file_path = f"{st.session_state.user.id}/logo_{int(datetime.now().timestamp())}.{file_ext}"
                 try:
-                    supabase.storage.from_("logos").upload(file=new_logo.getvalue(), path=file_path, file_options={"content-type": f"image/{file_ext}", "upsert": "true"})
+                    supabase.storage.from_("logos").upload(
+                        file=new_logo.getvalue(),
+                        path=file_path,
+                        file_options={"content-type": f"image/{file_ext}", "upsert": "true"}
+                    )
                     final_logo_url = supabase.storage.from_("logos").get_public_url(file_path)
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    logger.error(f"Logo upload error: {e}")
+                    st.error(f"Error al subir logo: {e}")
 
-            supabase.table("profiles").upsert({
-                "id": st.session_state.user.id, 
-                "business_name": name, 
-                "logo_url": final_logo_url,
-                "bank_name": bank_name, 
-                "account_type": acc_type, 
-                "account_number": acc_num,
-                "account_name": acc_name, 
-                "terms_conditions": terms, 
-                "catalog": catalog
-            }).execute()
-            fetch_user_data(force=True)
-            st.success("¡Guardado!")
+            try:
+                supabase.table("profiles").upsert({
+                    "id": st.session_state.user.id,
+                    "business_name": name,
+                    "logo_url": final_logo_url,
+                    "bank_name": bank_name,
+                    "account_type": acc_type,
+                    "account_number": acc_num,
+                    "account_name": acc_name,
+                    "terms_conditions": terms,
+                    "catalog": catalog,
+                }).execute()
+                fetch_user_data(force=True)
+                st.success("¡Guardado con éxito!")
+            except Exception as e:
+                logger.error(f"Profile save error: {e}")
+                st.error("Error al guardar el perfil.")
 
     st.subheader("📚 Mi Catálogo")
     if catalog:
@@ -853,36 +918,47 @@ def page_profile():
             col2.write(f"{profile.get('currency', 'Q')} {item['price']}")
             if col3.button("❌", key=f"del_cat_{idx}"):
                 catalog.pop(idx)
-                supabase.table("profiles").upsert({**profile, "catalog": catalog}).execute()
-                fetch_user_data(force=True)
-                st.rerun()
+                try:
+                    supabase.table("profiles").upsert({**profile, "catalog": catalog}).execute()
+                    fetch_user_data(force=True)
+                    st.rerun()
+                except Exception as e:
+                    logger.error(f"Catalog delete error: {e}")
+                    st.error("Error al eliminar.")
     else:
         st.info("Catálogo vacío.")
 
     with st.container(border=True):
-        new_desc = st.text_input("Servicio/Producto")
+        new_desc = st.text_input("Servicio / Producto")
         new_price = st.number_input("Precio", min_value=0.0)
         if st.button("➕ Guardar en Catálogo"):
             if new_desc and new_price > 0:
                 catalog.append({"desc": new_desc, "price": new_price})
-                supabase.table("profiles").upsert({**profile, "catalog": catalog}).execute()
-                fetch_user_data(force=True)
-                st.success("Añadido.")
-                st.rerun()
+                try:
+                    supabase.table("profiles").upsert({**profile, "catalog": catalog}).execute()
+                    fetch_user_data(force=True)
+                    st.success("¡Añadido!")
+                    st.rerun()
+                except Exception as e:
+                    logger.error(f"Catalog add error: {e}")
+                    st.error("Error al guardar.")
+            else:
+                st.warning("Completa la descripción y el precio.")
 
     st.subheader("🔒 Seguridad")
     with st.expander("Cambiar mi Contraseña"):
-        st.info("Si usaste un enlace de recuperación, ingresa aquí tu nueva contraseña.")
         new_password = st.text_input("Nueva Contraseña", type="password")
         if st.button("Actualizar Contraseña"):
             if len(new_password) >= 6:
                 try:
                     supabase.auth.update_user({"password": new_password})
-                    st.success("✅ ¡Tu contraseña ha sido actualizada con éxito!")
+                    st.success("✅ ¡Contraseña actualizada con éxito!")
                 except Exception as e:
-                    st.error(f"Error al actualizar: {e}")
+                    logger.error(f"Password update error: {e}")
+                    st.error("Error al actualizar la contraseña.")
             else:
                 st.warning("La contraseña debe tener al menos 6 caracteres.")
+
 
 # ==========================================
 # 💬 PAGE: SOPORTE
@@ -890,80 +966,75 @@ def page_profile():
 def page_support():
     st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
     st.title("💬 Soporte y Feedback")
-    
     with st.container(border=True):
         st.write("¿Tienes alguna duda, sugerencia o encontraste un error en CotiListo?")
         st.write("¡Escríbeme directamente! Me encantaría saber cómo puedo mejorar la herramienta para ti.")
-        
         wa_number = "50259714667"
         wa_message = urllib.parse.quote("¡Hola Romain! Necesito ayuda o tengo un comentario sobre CotiListo: ")
-        wa_url = f"https://wa.me/{wa_number}?text={wa_message}"
-        
         st.info("💡 Tu feedback es vital para seguir haciendo crecer esta plataforma.")
-        st.link_button("Contactar por WhatsApp 🟢", wa_url, use_container_width=True)
+        st.link_button("Contactar por WhatsApp 🟢", f"https://wa.me/{wa_number}?text={wa_message}", use_container_width=True)
+
 
 # ==========================================
 # 🔐 PAGE: LOGIN
 # ==========================================
-
-# 1. Login processing function
 def process_login():
     try:
         res = supabase.auth.sign_in_with_password({
-            "email": st.session_state.login_email.strip(), 
-            "password": st.session_state.login_pw
+            "email": st.session_state.login_email.strip(),
+            "password": st.session_state.login_pw,
         })
         st.session_state.user = res.user
         fetch_user_data(force=True)
         st.session_state.show_welcome = True
         st.session_state.login_error = None
-    except:
-        st.session_state.login_error = "Credenciales incorrectas"
+    except Exception as e:
+        logger.warning(f"Login failed: {e}")
+        st.session_state.login_error = "Credenciales incorrectas. Verifica tu email y contraseña."
 
-# 2. Registration processing function
+
 def process_registration():
     try:
         supabase.auth.sign_up({
-            "email": st.session_state.reg_email.strip(), 
-            "password": st.session_state.reg_pw
+            "email": st.session_state.reg_email.strip(),
+            "password": st.session_state.reg_pw,
         })
-        st.session_state.reg_msg = "Cuenta creada con éxito. Ya puedes ingresar."
+        st.session_state.reg_msg = "✅ Cuenta creada con éxito. Ya puedes ingresar."
         st.session_state.reg_error = None
     except Exception as e:
-        st.session_state.reg_error = f"Error: {e}"
+        logger.warning(f"Registration failed: {e}")
+        st.session_state.reg_error = f"Error al registrarse: {e}"
 
-# 3. Main Login Page UI
+
 def page_login():
     st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
     st.title("🔐 Acceso Premium")
     if not supabase:
-        return st.error("Supabase error.")
+        st.error("Error de configuración del servidor.")
+        return
 
-    # Show success message after password change if it exists
     if st.session_state.get("password_changed_success"):
         st.success("✅ Contraseña actualizada. Ya puedes ingresar.")
         st.session_state.password_changed_success = False
 
     tab1, tab2 = st.tabs(["Ingresar", "Crear Cuenta"])
-    
+
     with tab1:
-        # Standard Login Form
         with st.form("login_form"):
             st.text_input("Email", key="login_email", autocomplete="email")
             st.text_input("Contraseña", type="password", key="login_pw", autocomplete="current-password")
             st.form_submit_button("Entrar", type="primary", use_container_width=True, on_click=process_login)
-        
+
         if st.session_state.get("login_error"):
             st.error(st.session_state.login_error)
             st.session_state.login_error = None
 
-        # Interactive "Forgot Password" Section (OTP Flow)
-        st.write("") 
+        st.write("")
         with st.expander("¿Olvidaste tu contraseña?"):
             if not st.session_state.get("recovery_code_sent", False):
                 st.markdown("<small>Ingresa tu email para recibir un código de recuperación.</small>", unsafe_allow_html=True)
-                reset_email = st.text_input("Tu Email", key="reset_email_input", label_visibility="collapsed", placeholder="ejemplo@correo.com")
-                
+                reset_email = st.text_input("Tu Email", key="reset_email_input",
+                                            label_visibility="collapsed", placeholder="ejemplo@correo.com")
                 if st.button("Enviar código", use_container_width=True):
                     if reset_email:
                         try:
@@ -972,45 +1043,35 @@ def page_login():
                             st.session_state.recovery_code_sent = True
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Error: {e}")
+                            logger.error(f"Password reset error: {e}")
+                            st.error("Error al enviar el código. Verifica el email.")
                     else:
                         st.warning("Por favor, ingresa tu email.")
-            
             else:
                 st.success(f"📧 Código enviado a **{st.session_state.recovery_email}**")
-                st.markdown("<small>Ingresa el código y tu nueva contraseña.</small>", unsafe_allow_html=True)
-                
                 recovery_code = st.text_input("Código de recuperación")
                 new_pw = st.text_input("Nueva Contraseña", type="password")
-                
                 col_btn1, col_btn2 = st.columns(2)
-                
+
                 if col_btn1.button("Actualizar", type="primary", use_container_width=True):
                     if recovery_code and len(new_pw) >= 6:
                         try:
-                            # 1. Verify OTP (This creates a temporary session)
                             supabase.auth.verify_otp({
                                 "email": st.session_state.recovery_email,
                                 "token": recovery_code.strip(),
-                                "type": "recovery"
+                                "type": "recovery",
                             })
-                            
-                            # 2. Update password
                             supabase.auth.update_user({"password": new_pw})
-                            
-                            # 3. Log out immediately to clean the state
                             supabase.auth.sign_out()
-                            
-                            # 4. Success flag and reset
                             st.session_state.password_changed_success = True
                             st.session_state.recovery_code_sent = False
                             st.rerun()
-                            
                         except Exception as e:
+                            logger.warning(f"OTP verify failed: {e}")
                             st.error("El código es incorrecto o ha expirado.")
                     else:
                         st.warning("Completa los campos (mínimo 6 caracteres).")
-                        
+
                 if col_btn2.button("Cancelar", use_container_width=True):
                     st.session_state.recovery_code_sent = False
                     st.rerun()
@@ -1018,15 +1079,16 @@ def page_login():
     with tab2:
         with st.form("register_form"):
             st.text_input("Tu Email", key="reg_email")
-            st.text_input("Crea una Contraseña", type="password", key="reg_pw") 
+            st.text_input("Crea una Contraseña", type="password", key="reg_pw")
             st.form_submit_button("Registrarme", use_container_width=True, on_click=process_registration)
-        
+
         if st.session_state.get("reg_msg"):
             st.success(st.session_state.reg_msg)
             st.session_state.reg_msg = None
         if st.session_state.get("reg_error"):
             st.error(st.session_state.reg_error)
             st.session_state.reg_error = None
+
 
 # ==========================================
 # 🧭 NAVIGATION & APP ROUTING
@@ -1041,11 +1103,12 @@ page_log = st.Page(page_login, title="Entrar / Registro", icon="🔐")
 if st.session_state.user:
     with st.sidebar:
         st.write(f"👤 {st.session_state.user.email}")
-        if st.button("🚪 Cerrar Sesión", use_container_width=True): 
+        if st.button("🚪 Cerrar Sesión", use_container_width=True):
             supabase.auth.sign_out()
             st.session_state.user = None
             st.session_state.user_profile = {}
             st.session_state.clients = []
+            st.session_state.user_data_loaded = False  # 👈 Reset du flag à la déconnexion
             st.rerun()
     pg = st.navigation([page_gen, page_hist, page_crm, page_prof, page_sup])
 else:
