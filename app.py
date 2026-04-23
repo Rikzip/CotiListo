@@ -854,10 +854,20 @@ def page_profile():
 
     with st.expander("🏢 Negocio, Logo y Banco", expanded=True):
         name = st.text_input("Nombre del Negocio", value=profile.get('business_name', ''))
+        
+        # --- UX IMPROVEMENT: LOGO PREVIEW ---
+        st.markdown("**🖼️ Logo del Negocio**")
         current_logo = profile.get("logo_url", "")
-        if current_logo:
+        
+        new_logo = st.file_uploader("Sube tu nuevo logo (PNG, JPG - Máx 2MB)", type=["png", "jpg", "jpeg"])
+        
+        if new_logo:
+            st.image(new_logo, width=150, caption="✨ Vista previa del nuevo logo")
+            st.info("👇 Haz clic en 'Guardar Cambios' abajo para confirmar y subir el logo.")
+        elif current_logo:
             st.image(current_logo, width=150, caption="Logo Actual")
-        new_logo = st.file_uploader("Subir/Actualizar Logo (PNG, JPG - Máx 2MB)", type=["png", "jpg", "jpeg"])
+            
+        st.divider()
 
         st.markdown("**🏦 Información de Pago**")
         current_bank = profile.get('bank_name', '')
@@ -878,6 +888,8 @@ def page_profile():
 
         if st.button("💾 Guardar Cambios", type="primary"):
             final_logo_url = current_logo
+            
+            # 1. Traitement du logo
             if new_logo:
                 file_ext = new_logo.name.split('.')[-1].lower()
                 file_path = f"{st.session_state.user.id}/logo_{int(datetime.now().timestamp())}.{file_ext}"
@@ -890,8 +902,9 @@ def page_profile():
                     final_logo_url = supabase.storage.from_("logos").get_public_url(file_path)
                 except Exception as e:
                     logger.error(f"Logo upload error: {e}")
-                    st.error(f"Error al subir logo: {e}")
+                    st.error(f"Error técnico al subir logo a Storage: {e}")
 
+            # 2. Sauvegarde du profil
             try:
                 supabase.table("profiles").upsert({
                     "id": st.session_state.user.id,
@@ -904,11 +917,15 @@ def page_profile():
                     "terms_conditions": terms,
                     "catalog": catalog,
                 }).execute()
+                
                 fetch_user_data(force=True)
                 st.success("¡Guardado con éxito!")
+                st.rerun()  # 👈 C'est ici la magie UX : on force le rechargement immédiat !
+                
             except Exception as e:
                 logger.error(f"Profile save error: {e}")
-                st.error("Error al guardar el perfil.")
+                # On affiche l'erreur exacte envoyée par Supabase
+                st.error(f"Error de base de datos: {e}")
 
     st.subheader("📚 Mi Catálogo")
     if catalog:
@@ -924,7 +941,7 @@ def page_profile():
                     st.rerun()
                 except Exception as e:
                     logger.error(f"Catalog delete error: {e}")
-                    st.error("Error al eliminar.")
+                    st.error(f"Error al eliminar: {e}")
     else:
         st.info("Catálogo vacío.")
 
@@ -941,7 +958,7 @@ def page_profile():
                     st.rerun()
                 except Exception as e:
                     logger.error(f"Catalog add error: {e}")
-                    st.error("Error al guardar.")
+                    st.error(f"Error al añadir: {e}")
             else:
                 st.warning("Completa la descripción y el precio.")
 
@@ -955,7 +972,7 @@ def page_profile():
                     st.success("✅ ¡Contraseña actualizada con éxito!")
                 except Exception as e:
                     logger.error(f"Password update error: {e}")
-                    st.error("Error al actualizar la contraseña.")
+                    st.error(f"Error al actualizar la contraseña: {e}")
             else:
                 st.warning("La contraseña debe tener al menos 6 caracteres.")
 
