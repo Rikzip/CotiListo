@@ -143,7 +143,9 @@ _defaults = {
     'recovery_code_sent': False,
     'recovery_email': "",
     'password_changed_success': False,
-    'user_data_loaded': False,  # 👈 Le fameux drapeau
+    'user_data_loaded': False,
+    'profile_saved': False,
+    'catalog_saved': False,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -842,8 +844,18 @@ def page_clients():
 # ⚙️ PAGE: PERFIL
 # ==========================================
 def page_profile():
+    # --- GESTION DES TOASTS POST-RERUN ---
+    if st.session_state.get("profile_saved"):
+        st.toast("¡Perfil guardado con éxito!", icon="✅")
+        st.session_state.profile_saved = False
+        
+    if st.session_state.get("catalog_saved"):
+        st.toast("¡Catálogo actualizado!", icon="📚")
+        st.session_state.catalog_saved = False
+
     st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
     st.title("⚙️ Mi Perfil")
+    
     if not st.session_state.user:
         st.warning("Inicia sesión para configurar tu perfil.")
         return
@@ -855,10 +867,10 @@ def page_profile():
     with st.expander("🏢 Negocio, Logo y Banco", expanded=True):
         name = st.text_input("Nombre del Negocio", value=profile.get('business_name', ''))
         
-        # --- UX IMPROVEMENT: LOGO PREVIEW ---
         st.markdown("**🖼️ Logo del Negocio**")
         current_logo = profile.get("logo_url", "")
         
+        # Le widget d'upload (UI)
         new_logo = st.file_uploader("Sube tu nuevo logo (PNG, JPG - Máx 2MB)", type=["png", "jpg", "jpeg"])
         
         if new_logo:
@@ -869,6 +881,7 @@ def page_profile():
             
         st.divider()
 
+        # UI : Champs de banque bien séparés de la sauvegarde
         st.markdown("**🏦 Información de Pago**")
         current_bank = profile.get('bank_name', '')
         bank_index = GUATEMALA_BANKS.index(current_bank) if current_bank in GUATEMALA_BANKS else 0
@@ -886,11 +899,20 @@ def page_profile():
         )
         terms = st.text_area("Condiciones", value=profile.get('terms_conditions', ''))
 
+        # LOGIQUE DE SAUVEGARDE : Tout se passe uniquement quand on clique ici
         if st.button("💾 Guardar Cambios", type="primary"):
             final_logo_url = current_logo
             
-            # 1. Traitement du logo
             if new_logo:
+                # 🧹 1. Supprimer l'ancien logo s'il existe
+                if current_logo:
+                    try:
+                        old_path = current_logo.split("/logos/")[1]
+                        supabase.storage.from_("logos").remove([old_path])
+                    except Exception as e:
+                        logger.warning(f"Could not delete old logo: {e}")
+
+                # 📤 2. Uploader le nouveau logo
                 file_ext = new_logo.name.split('.')[-1].lower()
                 file_path = f"{st.session_state.user.id}/logo_{int(datetime.now().timestamp())}.{file_ext}"
                 try:
@@ -904,7 +926,7 @@ def page_profile():
                     logger.error(f"Logo upload error: {e}")
                     st.error(f"Error técnico al subir logo a Storage: {e}")
 
-            # 2. Sauvegarde du profil
+            # 💾 3. Sauvegarder dans la DB
             try:
                 supabase.table("profiles").upsert({
                     "id": st.session_state.user.id,
@@ -919,12 +941,11 @@ def page_profile():
                 }).execute()
                 
                 fetch_user_data(force=True)
-                st.success("¡Guardado con éxito!")
-                st.rerun()  # 👈 C'est ici la magie UX : on force le rechargement immédiat !
+                st.session_state.profile_saved = True  # Déclenche le Toast
+                st.rerun()
                 
             except Exception as e:
                 logger.error(f"Profile save error: {e}")
-                # On affiche l'erreur exacte envoyée par Supabase
                 st.error(f"Error de base de datos: {e}")
 
     st.subheader("📚 Mi Catálogo")
@@ -938,6 +959,7 @@ def page_profile():
                 try:
                     supabase.table("profiles").upsert({**profile, "catalog": catalog}).execute()
                     fetch_user_data(force=True)
+                    st.session_state.catalog_saved = True
                     st.rerun()
                 except Exception as e:
                     logger.error(f"Catalog delete error: {e}")
@@ -954,7 +976,7 @@ def page_profile():
                 try:
                     supabase.table("profiles").upsert({**profile, "catalog": catalog}).execute()
                     fetch_user_data(force=True)
-                    st.success("¡Añadido!")
+                    st.session_state.catalog_saved = True
                     st.rerun()
                 except Exception as e:
                     logger.error(f"Catalog add error: {e}")
