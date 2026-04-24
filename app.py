@@ -844,7 +844,7 @@ def page_clients():
 # ⚙️ PAGE: PERFIL
 # ==========================================
 def page_profile():
-    # --- GESTION DES TOASTS POST-RERUN ---
+    # --- POST-RERUN TOAST MANAGEMENT ---
     if st.session_state.get("profile_saved"):
         st.toast("¡Perfil guardado con éxito!", icon="✅")
         st.session_state.profile_saved = False
@@ -862,7 +862,7 @@ def page_profile():
 
     fetch_user_data()
     profile = st.session_state.user_profile
-    catalog = list(profile.get("catalog", []))  # mutable copy
+    catalog = list(profile.get("catalog", []))  # Mutable copy
 
     with st.expander("🏢 Negocio, Logo y Banco", expanded=True):
         name = st.text_input("Nombre del Negocio", value=profile.get('business_name', ''))
@@ -870,7 +870,7 @@ def page_profile():
         st.markdown("**🖼️ Logo del Negocio**")
         current_logo = profile.get("logo_url", "")
         
-        # Le widget d'upload (UI)
+        # Upload widget (UI)
         new_logo = st.file_uploader("Sube tu nuevo logo (PNG, JPG - Máx 2MB)", type=["png", "jpg", "jpeg"])
         
         if new_logo:
@@ -881,7 +881,7 @@ def page_profile():
             
         st.divider()
 
-        # UI : Champs de banque bien séparés de la sauvegarde
+        # UI: Bank fields
         st.markdown("**🏦 Información de Pago**")
         current_bank = profile.get('bank_name', '')
         bank_index = GUATEMALA_BANKS.index(current_bank) if current_bank in GUATEMALA_BANKS else 0
@@ -899,20 +899,21 @@ def page_profile():
         )
         terms = st.text_area("Condiciones", value=profile.get('terms_conditions', ''))
 
-        # LOGIQUE DE SAUVEGARDE : Tout se passe uniquement quand on clique ici
+        # SAVE LOGIC: Executes only on button click
         if st.button("💾 Guardar Cambios", type="primary"):
             final_logo_url = current_logo
             
             if new_logo:
-                # 🧹 1. Supprimer l'ancien logo s'il existe
+                # 1. Delete old logo if it exists
                 if current_logo:
                     try:
                         old_path = current_logo.split("/logos/")[1]
                         supabase.storage.from_("logos").remove([old_path])
                     except Exception as e:
-                        logger.warning(f"Could not delete old logo: {e}")
+                        # Silently ignore if already deleted manually
+                        pass 
 
-                # 📤 2. Uploader le nouveau logo
+                # 2. Upload new logo
                 file_ext = new_logo.name.split('.')[-1].lower()
                 file_path = f"{st.session_state.user.id}/logo_{int(datetime.now().timestamp())}.{file_ext}"
                 try:
@@ -923,10 +924,10 @@ def page_profile():
                     )
                     final_logo_url = supabase.storage.from_("logos").get_public_url(file_path)
                 except Exception as e:
-                    logger.error(f"Logo upload error: {e}")
-                    st.error(f"Error técnico al subir logo a Storage: {e}")
+                    st.error(f"Error al subir logo a Storage: {e}")
+                    st.stop()  # Stops execution and prevents rerun
 
-            # 💾 3. Sauvegarder dans la DB
+            # 3. Save to DB
             try:
                 supabase.table("profiles").upsert({
                     "id": st.session_state.user.id,
@@ -941,12 +942,12 @@ def page_profile():
                 }).execute()
                 
                 fetch_user_data(force=True)
-                st.session_state.profile_saved = True  # Déclenche le Toast
+                st.session_state.profile_saved = True 
                 st.rerun()
                 
             except Exception as e:
-                logger.error(f"Profile save error: {e}")
                 st.error(f"Error de base de datos: {e}")
+                st.stop()
 
     st.subheader("📚 Mi Catálogo")
     if catalog:
