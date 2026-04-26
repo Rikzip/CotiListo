@@ -824,8 +824,10 @@ def page_history():
         st.page_link(page_gen, label="➕ Crear mi primera cotización", icon="📝")
         return
 
+    # Silent garbage collection for expired PDFs
     _purge_expired_pdfs(st.session_state.user.id, quotes)
 
+    # Search bar
     search = st.text_input("🔍 Buscar cliente...", placeholder="Nombre del cliente")
     if search:
         quotes = [q for q in quotes if search.lower() in q.get("client_name", "").lower()]
@@ -845,53 +847,101 @@ def page_history():
         smart_url = f"{BASE_URL}/?doc={doc_id}"
 
         status_icon = "⚠️" if days_old > PDF_LINK_EXPIRY_DAYS else "📄"
-        with st.expander(f"{status_icon} {client_name} — {currency} {total_amount} (Hace {days_old} días)"):
+        with st.expander(f"{status_icon} {client_name} — {currency} {total_amount:.2f} (Hace {days_old} días)"):
             if days_old > PDF_LINK_EXPIRY_DAYS:
                 st.error("⚠️ Este enlace ha expirado para el cliente (>30 días)")
                 if st.button("🔄 Regenerar Cotización", key=f"regen_{doc_id}", use_container_width=True):
                     try:
+                        # 1. Delete physical PDF from Storage if it exists
                         old_pdf_url = q.get("pdf_url", "")
                         if old_pdf_url:
                             try:
                                 old_path = old_pdf_url.split("/quotations/")[1].split("?")[0]
                                 supabase.storage.from_("quotations").remove([old_path])
                             except Exception as e:
-                                pass
+                                logger.warning(f"Could not delete old PDF: {e}")
 
+                        # 2. Generate and upload new PDF
                         new_pdf_bytes = generate_pdf(q_data)
                         _, new_secure_url = upload_pdf_to_storage(new_pdf_bytes, st.session_state.user.id)
+                        
                         supabase.table("quotes").update({
                             "pdf_url": new_secure_url,
                             "created_at": datetime.now(timezone.utc).isoformat(),
                         }).eq("id", doc_id).execute()
+                        
                         st.success("¡Cotización regenerada!")
                         st.rerun()
                     except Exception as e:
                         logger.error(f"Regen error: {e}")
                         st.error(f"Error al regenerar: {e}")
             else:
-                col1, col2, col3, col4 = st.columns(4)
+                # Active quote layout (5 columns)
+                col1, col2, col3, col4, col5 = st.columns(5)
+                
                 with col1:
                     st.link_button("👁️ Ver Enlace", smart_url, use_container_width=True)
+                
                 with col2:
                     client_phone = q_data.get("display_phone", "")
                     if client_phone:
                         clean_phone = ''.join(filter(str.isdigit, client_phone))
+                        # Clean message without emojis for strict URL compatibility
                         wa_msg = f"Hola {client_name}. Te comparto nuevamente el enlace de tu cotización:\n{smart_url}"
                         wa_url = f"https://wa.me/{clean_phone}?text={urllib.parse.quote(wa_msg.encode('utf-8'))}"
                         st.link_button("💬 WhatsApp", wa_url, use_container_width=True)
                     else:
                         st.button("💬 WhatsApp", disabled=True, key=f"wa_dis_{doc_id}",
                                   help="No hay teléfono registrado", use_container_width=True)
+                
                 with col3:
+                    # Clean email without emojis
                     subject = urllib.parse.quote(f"Tu Cotización - {client_name}".encode('utf-8'))
                     body = urllib.parse.quote(f"Hola {client_name},\n\nAdjunto el enlace a tu cotización segura:\n{smart_url}\n\nSaludos cordiales,".encode('utf-8'))
                     st.link_button("📧 Email", f"mailto:?subject={subject}&body={body}", use_container_width=True)
+                
                 with col4:
                     if st.button("📋 Duplicar", key=f"dup_{doc_id}", use_container_width=True):
                         st.session_state.cart = q_data.get("cart", [])
                         st.session_state.pdf_ready = False
                         st.switch_page(page_gen)
+                
+                with col5:
+                    # Delete trigger button
+                    if st.button("🗑️ Eliminar", key=f"del_btn_{doc_id}", use_container_width=True):
+                        st.session_state[f"confirm_del_{doc_id}"] = True
+
+                # --- CONFIRMATION ZONE ---
+                if st.session_state.get(f"confirm_del_{doc_id}"):
+                    st.warning("⚠️ ¿Estás seguro? Esta acción no se puede deshacer.")
+                    col_yes, col_no = st.columns([1, 1])
+                    
+                    with col_yes:
+                        if st.button("🚨 Sí, borrar definitivamente", key=f"yes_{doc_id}", use_container_width=True):
+                            try:
+                                # 1. Delete physical PDF from Storage if it exists
+                                old_pdf_url = q.get("pdf_url", "")
+                                if old_pdf_url:
+                                    try:
+                                        old_path = old_pdf_url.split("/quotations/")[1].split("?")[0]
+                                        supabase.storage.from_("quotations").remove([old_path])
+                                    except Exception:
+                                        pass
+                                
+                                # 2. Delete row from Database
+                                supabase.table("quotes").delete().eq("id", doc_id).execute()
+                                
+                                # 3. Reset state and reload
+                                st.session_state[f"confirm_del_{doc_id}"] = False
+                                st.success("Cotización eliminada.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error al eliminar: {e}")
+                                
+                    with col_no:
+                        if st.button("❌ Cancelar", key=f"no_{doc_id}", use_container_width=True):
+                            st.session_state[f"confirm_del_{doc_id}"] = False
+                            st.rerun()
 
 # ==========================================
 # 👥 PAGE: CLIENTES
