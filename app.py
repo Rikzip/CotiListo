@@ -462,32 +462,6 @@ def generate_pdf(quote_data: dict) -> bytes:
 # ==========================================
 # 📂 PAGE: GENERADOR
 # ==========================================
-TEMPLATES = {
-    "General": ["Producto básico", "Producto premium", "Servicio general", "Envío / Delivery", "Descuento especial"],
-    "Taller Mecánico / Motos": ["Diagnóstico general", "Servicio menor", "Servicio mayor", "Cambio de aceite y filtro", "Cambio de pastillas de freno", "Alineación y balanceo", "Revisión del sistema eléctrico", "Reparación de motor", "Limpieza de inyectores"],
-    "Odontología / Dentista": ["Consulta de evaluación", "Limpieza dental (Profilaxis)", "Relleno blanco (Resina)", "Extracción simple", "Extracción de cordal", "Blanqueamiento dental", "Tratamiento de canales", "Radiografía panorámica"],
-    "Clínica Médica": ["Consulta médica general", "Consulta con especialista", "Examen de laboratorio clínico", "Electrocardiograma", "Ultrasonido", "Certificado médico", "Aplicación de medicamento"],
-    "Construcción / Carpintería": ["Mano de obra (por día)", "Mano de obra (por obra)", "Instalación (m2)", "Fabricación de mueble a medida", "Pintura interior/exterior (m2)", "Reparación estructural", "Supervisión de obra", "Materiales varios"],
-    "Freelance / Servicios": ["Consultoría (por hora)", "Consultoría (por proyecto)", "Desarrollo de página web", "Diseño de logotipo", "Gestión de redes sociales (Mensual)", "Auditoría / Análisis", "Traducción de documentos"],
-    "Eventos / Catering": ["Menú por persona (Básico)", "Menú por persona (Premium)", "Alquiler de salón", "Alquiler de sillas y mesas", "Servicio de meseros", "Decoración floral", "Pastel personalizado", "Equipo de sonido"],
-}
-
-COUNTRY_CODES = {
-    "🇬🇹 +502": "502", "🇸🇻 +503": "503", "🇭🇳 +504": "504",
-    "🇲🇽 +52": "52", "🇺🇸 +1": "1", "Otra": "",
-}
-
-GUATEMALA_BANKS = [
-    "Banco Industrial (BI)", "Banco de Desarrollo Rural (Banrural)", "Banco G&T Continental",
-    "Banco Agromercantil de Guatemala (BAM)", "Banco de América Central (BAC Credomatic)",
-    "Banco de los Trabajadores (Bantrab)", "El Crédito Hipotecario Nacional (CHN)",
-    "Banco Promerica", "Banco Ficohsa", "Banco Inmobiliario", "Banco Internacional",
-    "Banco de Antigua", "Banco Azteca", "Banco Cuscatlán", "Vivibanco", "Banco INV",
-    "Banco Credicorp", "Banco Nexa", "Banco MultiMoney", "Citibank",
-    "Cooperativa Micoope", "Otra...",
-]
-
-
 def page_free_generator():
     if st.session_state.get('show_welcome'):
         st.toast("¡Conexión exitosa!", icon="👋")
@@ -517,7 +491,13 @@ def page_free_generator():
         with st.container(border=True):
             st.markdown("#### ⚡ Trabaja más rápido")
             st.write("Logo automático, catálogo de precios, historial y enlace WhatsApp inteligente.")
-            st.page_link(page_log, label="✨ Crear cuenta gratis", icon="🚀")
+            
+            # 👇 MODIFICATION UX : Boutons côte à côte
+            col_cta1, col_cta2 = st.columns(2)
+            with col_cta1:
+                st.page_link(page_log, label="✨ Crear cuenta gratis")
+            with col_cta2:
+                st.page_link(page_log, label="🔑 Ya tengo cuenta")
 
     # --- Contador mensual (logged users only) ---
     if st.session_state.user:
@@ -741,10 +721,15 @@ def page_free_generator():
 
                 if c_phone:
                     clean_phone = ''.join(filter(str.isdigit, c_phone))
+                    
+                    # 👇 MODIFICATION : Sécurité pour ne pas doubler le préfixe pays
+                    if phone_prefix and clean_phone.startswith(phone_prefix):
+                        clean_phone = clean_phone[len(phone_prefix):]
+                        
                     full_number = f"{phone_prefix}{clean_phone}"
                     wa_msg = (
-                        f"¡Hola {c_name}! 👋 Te comparto la cotización de "
-                        f"{seller_name or 'nuestro servicio'}. "
+                        f"¡Hola {c_name}!\n👋 Te comparto la cotización de "
+                        f"{seller_name or 'nuestro servicio'}.\n"
                         f"El total es de {currency_symbol} {total:.2f}."
                     )
                     if smart_url:
@@ -758,10 +743,8 @@ def page_free_generator():
                     st.session_state.wa_url = ""
 
             st.balloons()
-
-            # Reset cart after generation
             st.session_state.cart = []
-            st.session_state.pdf_ready = True  # Keep True to show action buttons
+            st.session_state.pdf_ready = True
 
     # --- Action buttons ---
     if st.session_state.get('pdf_ready'):
@@ -773,10 +756,13 @@ def page_free_generator():
             else:
                 st.warning("Sin número de teléfono para WhatsApp.")
         with col_act2:
+            # 👇 MODIFICATION : Nettoyage du nom de fichier pour éviter les bugs OS
+            safe_c_name = "".join(c for c in c_name if c.isalnum() or c in " _-").strip().replace(" ", "_")
+            
             st.download_button(
                 label="Descargar PDF 📥",
                 data=st.session_state.pdf_bytes,
-                file_name=f"Cotizacion_{c_name.replace(' ', '_')}.pdf",
+                file_name=f"Cotizacion_{safe_c_name}.pdf",
                 mime="application/pdf",
                 use_container_width=True,
             )
@@ -786,7 +772,13 @@ def page_free_generator():
             st.divider()
             with st.container(border=True):
                 st.warning("💡 **¿Te gustó?** Con una cuenta gratuita, tu cliente recibe un enlace directo en WhatsApp y tú guardas el historial automáticamente.")
-                st.page_link(page_log, label="Crear mi cuenta gratis →", icon="✨")
+                
+                # 👇 MODIFICATION UX : Boutons côte à côte
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    st.page_link(page_log, label="Crear cuenta gratis →", icon="✨")
+                with col_b2:
+                    st.page_link(page_log, label="Ingresar a mi cuenta", icon="🔑")
 
 
 # ==========================================
