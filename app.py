@@ -20,7 +20,7 @@ import logging
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# 🌍 GLOBAL CONSTANTS — single source of truth
+# 🌍 GLOBAL CONSTANTS
 BASE_URL = os.environ.get("APP_BASE_URL", "https://app.cotilisto.com")
 PDF_LINK_EXPIRY_DAYS = 30
 PDF_SIGNED_URL_SECONDS = PDF_LINK_EXPIRY_DAYS * 86400  # 30 days in seconds
@@ -42,7 +42,7 @@ st.markdown("""
     footer { display: none !important; }
     .stDeployButton { display: none !important; }
     [data-testid="stAppDeployButton"] { display: none !important; }
-    [data-testid="stMainMenu"] { display: none !important; visibility: hidden !important; }
+    [data-testid="stMainMenu"] { visibility: hidden !important; }
     [data-testid="stHeaderActionElements"] { display: none !important; }
     input::-ms-reveal, input::-ms-clear { display: none !important; }
 
@@ -72,7 +72,6 @@ st.markdown("""
 # ==========================================
 @st.cache_resource
 def get_supabase_client():
-    """Create and cache the Supabase client (created only once per session)."""
     url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
     key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
     if url and key:
@@ -81,6 +80,34 @@ def get_supabase_client():
     return None
 
 supabase = get_supabase_client()
+
+# ==========================================
+# 📋 CONSTANTS & TEMPLATES (MOVED TO TOP)
+# ==========================================
+TEMPLATES = {
+    "General": ["Producto básico", "Producto premium", "Servicio general", "Envío / Delivery", "Descuento especial"],
+    "Taller Mecánico / Motos": ["Diagnóstico general", "Servicio menor", "Servicio mayor", "Cambio de aceite y filtro", "Cambio de pastillas de freno", "Alineación y balanceo", "Revisión del sistema eléctrico", "Reparación de motor", "Limpieza de inyectores"],
+    "Odontología / Dentista": ["Consulta de evaluación", "Limpieza dental (Profilaxis)", "Relleno blanco (Resina)", "Extracción simple", "Extracción de cordal", "Blanqueamiento dental", "Tratamiento de canales", "Radiografía panorámica"],
+    "Clínica Médica": ["Consulta médica general", "Consulta con especialista", "Examen de laboratorio clínico", "Electrocardiograma", "Ultrasonido", "Certificado médico", "Aplicación de medicamento"],
+    "Construcción / Carpintería": ["Mano de obra (por día)", "Mano de obra (por obra)", "Instalación (m2)", "Fabricación de mueble a medida", "Pintura interior/exterior (m2)", "Reparación estructural", "Supervisión de obra", "Materiales varios"],
+    "Freelance / Servicios": ["Consultoría (por hora)", "Consultoría (por proyecto)", "Desarrollo de página web", "Diseño de logotipo", "Gestión de redes sociales (Mensual)", "Auditoría / Análisis", "Traducción de documentos"],
+    "Eventos / Catering": ["Menú por persona (Básico)", "Menú por persona (Premium)", "Alquiler de salón", "Alquiler de sillas y mesas", "Servicio de meseros", "Decoración floral", "Pastel personalizado", "Equipo de sonido"],
+}
+
+COUNTRY_CODES = {
+    "🇬🇹 +502": "502", "🇸🇻 +503": "503", "🇭🇳 +504": "504",
+    "🇲🇽 +52": "52", "🇺🇸 +1": "1", "Otra": "",
+}
+
+GUATEMALA_BANKS = [
+    "Banco Industrial (BI)", "Banco de Desarrollo Rural (Banrural)", "Banco G&T Continental",
+    "Banco Agromercantil de Guatemala (BAM)", "Banco de América Central (BAC Credomatic)",
+    "Banco de los Trabajadores (Bantrab)", "El Crédito Hipotecario Nacional (CHN)",
+    "Banco Promerica", "Banco Ficohsa", "Banco Inmobiliario", "Banco Internacional",
+    "Banco de Antigua", "Banco Azteca", "Banco Cuscatlán", "Vivibanco", "Banco INV",
+    "Banco Credicorp", "Banco Nexa", "Banco MultiMoney", "Citibank",
+    "Cooperativa Micoope", "Otra...",
+]
 
 # ==========================================
 # 🌍 PUBLIC ROUTER: THE VIEWER PAGE
@@ -160,7 +187,6 @@ def get_base64_image(image_path: str) -> str:
     with open(image_path, "rb") as f:
         return base64.b64encode(f.read()).decode()
 
-
 def fetch_user_data(force: bool = False):
     if not st.session_state.user:
         return
@@ -181,9 +207,7 @@ def fetch_user_data(force: bool = False):
 
         st.session_state.user_data_loaded = True
 
-
 def get_quotes_this_month(user_id: str) -> int:
-    """Return count of quotes created this calendar month."""
     try:
         now = datetime.now(timezone.utc)
         first_day = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -195,7 +219,6 @@ def get_quotes_this_month(user_id: str) -> int:
     except Exception as e:
         logger.warning(f"Quote count error: {e}")
         return 0
-
 
 def process_image_for_pdf(image_input_stream) -> io.BytesIO:
     try:
@@ -221,7 +244,6 @@ def process_image_for_pdf(image_input_stream) -> io.BytesIO:
         image_input_stream.seek(0)
         return image_input_stream
 
-
 def upload_pdf_to_storage(pdf_bytes: bytes, user_id: str) -> tuple[str, str]:
     file_name = f"{user_id}/cotizacion_{int(datetime.now().timestamp())}.pdf"
     supabase.storage.from_("quotations").upload(
@@ -242,25 +264,20 @@ def upload_pdf_to_storage(pdf_bytes: bytes, user_id: str) -> tuple[str, str]:
     public_url = supabase.storage.from_("quotations").get_public_url(file_name)
     return public_url, secure_url or public_url
 
-
 # ==========================================
 # ⚙️ PDF GENERATION ENGINE
 # ==========================================
 def _draw_header(c, width, height, quote_data):
-    """Draw Option 2 header: light grey background, logo, blue bottom line."""
-    # --- Grey header background ---
     header_height = 1.4 * inch
     header_y = height - header_height
     c.setFillColorRGB(0.97, 0.97, 0.97)  # #F8F8F8
     c.rect(0, header_y, width, header_height, fill=True, stroke=False)
 
-    # --- Blue accent line at bottom of header ---
     brand_blue = (0.09, 0.44, 0.76)
     c.setFillColorRGB(*brand_blue)
     c.rect(0, header_y, width, 0.03 * inch, fill=True, stroke=False)
     c.setFillColorRGB(0, 0, 0)
 
-    # --- "Cotización" title and date — right aligned ---
     c.setFillColorRGB(0.2, 0.2, 0.2)
     c.setFont("Helvetica-Bold", 20)
     c.drawRightString(width - 0.75 * inch, height - 0.65 * inch, "Cotización")
@@ -269,7 +286,6 @@ def _draw_header(c, width, height, quote_data):
     c.drawRightString(width - 0.75 * inch, height - 0.85 * inch, f"Fecha: {quote_data['date']}")
     c.setFillColorRGB(0, 0, 0)
 
-    # --- Logo or seller name — left aligned, vertically centered in header ---
     logo_w, logo_h = 2.0 * inch, 1.0 * inch
     logo_x = 0.75 * inch
     logo_y = header_y + (header_height - logo_h) / 2
@@ -305,9 +321,7 @@ def _draw_header(c, width, height, quote_data):
         c.drawString(logo_x, header_y + (header_height / 2) - 0.1 * inch, quote_data['seller_name'])
         c.setFillColorRGB(0, 0, 0)
 
-
 def _draw_client_info(c, y_pos, quote_data) -> float:
-    """Draw client block, return updated y_pos."""
     c.setFont("Helvetica-Bold", 11)
     c.setFillColorRGB(0.2, 0.2, 0.2)
     c.drawString(1 * inch, y_pos, f"Cliente: {quote_data['client_name']}")
@@ -337,9 +351,7 @@ def _draw_client_info(c, y_pos, quote_data) -> float:
 
     return y_pos
 
-
 def _draw_items_table(c, y_pos, quote_data, width, height) -> float:
-    """Draw the items table header + rows with multi-page support."""
     y_pos -= 0.4 * inch
 
     def draw_table_header(y):
@@ -357,14 +369,12 @@ def _draw_items_table(c, y_pos, quote_data, width, height) -> float:
     c.setFont("Helvetica", 10)
 
     for idx, item in enumerate(quote_data['cart']):
-        # Multi-page: if too close to footer, create new page
         if y_pos < 2.5 * inch:
             c.showPage()
             y_pos = height - 1 * inch
             y_pos = draw_table_header(y_pos)
             c.setFont("Helvetica", 10)
 
-        # Alternating row background
         if idx % 2 == 0:
             c.setFillColorRGB(0.98, 0.98, 0.98)
             c.rect(1 * inch, y_pos - 0.06 * inch, 6.5 * inch, 0.22 * inch, fill=True, stroke=False)
@@ -377,9 +387,7 @@ def _draw_items_table(c, y_pos, quote_data, width, height) -> float:
 
     return y_pos
 
-
 def _draw_totals(c, y_pos, quote_data) -> float:
-    """Draw totals, advance and balance sections."""
     y_pos -= 0.1 * inch
     c.setStrokeColorRGB(0.09, 0.44, 0.76)
     c.line(4 * inch, y_pos, 7.5 * inch, y_pos)
@@ -404,9 +412,7 @@ def _draw_totals(c, y_pos, quote_data) -> float:
 
     return y_pos
 
-
 def _draw_footer(c, width, quote_data):
-    """Draw payment info, terms and branding footer."""
     y_pos = 1.8 * inch
     c.setStrokeColorRGB(0.8, 0.8, 0.8)
     c.line(1 * inch, y_pos, 7.5 * inch, y_pos)
@@ -439,9 +445,7 @@ def _draw_footer(c, width, quote_data):
     tw = c.stringWidth(promo, "Helvetica-Oblique", 9)
     c.drawString((width / 2) - (tw / 2), 0.5 * inch, promo)
 
-
 def generate_pdf(quote_data: dict) -> bytes:
-    """Assemble the full PDF and return bytes."""
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
@@ -457,7 +461,6 @@ def generate_pdf(quote_data: dict) -> bytes:
     pdf_bytes = buffer.getvalue()
     buffer.close()
     return pdf_bytes
-
 
 # ==========================================
 # 📂 PAGE: GENERADOR
@@ -492,7 +495,7 @@ def page_free_generator():
             st.markdown("#### ⚡ Trabaja más rápido")
             st.write("Logo automático, catálogo de precios, historial y enlace WhatsApp inteligente.")
             
-            # 👇 MODIFICATION UX : Boutons côte à côte
+            # UX: Boutons côte à côte
             col_cta1, col_cta2 = st.columns(2)
             with col_cta1:
                 st.page_link(page_log, label="✨ Crear cuenta gratis")
@@ -721,8 +724,6 @@ def page_free_generator():
 
                 if c_phone:
                     clean_phone = ''.join(filter(str.isdigit, c_phone))
-                    
-                    # 👇 MODIFICATION : Sécurité pour ne pas doubler le préfixe pays
                     if phone_prefix and clean_phone.startswith(phone_prefix):
                         clean_phone = clean_phone[len(phone_prefix):]
                         
@@ -756,9 +757,7 @@ def page_free_generator():
             else:
                 st.warning("Sin número de teléfono para WhatsApp.")
         with col_act2:
-            # 👇 MODIFICATION : Nettoyage du nom de fichier pour éviter les bugs OS
             safe_c_name = "".join(c for c in c_name if c.isalnum() or c in " _-").strip().replace(" ", "_")
-            
             st.download_button(
                 label="Descargar PDF 📥",
                 data=st.session_state.pdf_bytes,
@@ -767,25 +766,21 @@ def page_free_generator():
                 use_container_width=True,
             )
 
-        # --- CTA post-génération pour utilisateurs non connectés ---
+        # --- CTA post-génération ---
         if not st.session_state.user:
             st.divider()
             with st.container(border=True):
                 st.warning("💡 **¿Te gustó?** Con una cuenta gratuita, tu cliente recibe un enlace directo en WhatsApp y tú guardas el historial automáticamente.")
-                
-                # 👇 MODIFICATION UX : Boutons côte à côte
                 col_b1, col_b2 = st.columns(2)
                 with col_b1:
                     st.page_link(page_log, label="Crear cuenta gratis →", icon="✨")
                 with col_b2:
                     st.page_link(page_log, label="Ingresar a mi cuenta", icon="🔑")
 
-
 # ==========================================
 # 🗂️ PAGE: HISTORY
 # ==========================================
 def _purge_expired_pdfs(user_id: str, quotes: list):
-    """Silently delete physical PDFs older than 30 days from Storage."""
     for q in quotes:
         created_date = datetime.fromisoformat(q['created_at'].replace("Z", "+00:00"))
         days_old = (datetime.now(timezone.utc) - created_date).days
@@ -793,12 +788,9 @@ def _purge_expired_pdfs(user_id: str, quotes: list):
             try:
                 old_path = q["pdf_url"].split("/quotations/")[1].split("?")[0]
                 supabase.storage.from_("quotations").remove([old_path])
-                supabase.table("quotes").update(
-                    {"pdf_url": None}
-                ).eq("id", q["id"]).execute()
+                supabase.table("quotes").update({"pdf_url": None}).eq("id", q["id"]).execute()
             except Exception as e:
                 logger.warning(f"Purge failed for quote {q['id']}: {e}")
-
 
 def page_history():
     st.title("🗂️ Historial de Cotizaciones")
@@ -824,10 +816,8 @@ def page_history():
         st.page_link(page_gen, label="➕ Crear mi primera cotización", icon="📝")
         return
 
-    # --- Garbage collection silencieux ---
     _purge_expired_pdfs(st.session_state.user.id, quotes)
 
-    # --- Búsqueda ---
     search = st.text_input("🔍 Buscar cliente...", placeholder="Nombre del cliente")
     if search:
         quotes = [q for q in quotes if search.lower() in q.get("client_name", "").lower()]
@@ -852,7 +842,6 @@ def page_history():
                 st.error("⚠️ Este enlace ha expirado para el cliente (>30 días)")
                 if st.button("🔄 Regenerar Cotización", key=f"regen_{doc_id}", use_container_width=True):
                     try:
-                        # 1. Supprimer l'ancien PDF physiquement
                         old_pdf_url = q.get("pdf_url", "")
                         if old_pdf_url:
                             try:
@@ -861,7 +850,6 @@ def page_history():
                             except Exception as e:
                                 logger.warning(f"Could not delete old PDF: {e}")
 
-                        # 2. Générer et uploader le nouveau
                         new_pdf_bytes = generate_pdf(q_data)
                         _, new_secure_url = upload_pdf_to_storage(new_pdf_bytes, st.session_state.user.id)
                         supabase.table("quotes").update({
@@ -889,17 +877,13 @@ def page_history():
                                   help="No hay teléfono registrado", use_container_width=True)
                 with col3:
                     subject = urllib.parse.quote(f"Tu Cotización - {client_name}")
-                    body = urllib.parse.quote(
-                        f"Hola {client_name},\n\nAdjunto el enlace a tu cotización segura:\n{smart_url}\n\nSaludos cordiales,"
-                    )
+                    body = urllib.parse.quote(f"Hola {client_name},\n\nAdjunto el enlace a tu cotización segura:\n{smart_url}\n\nSaludos cordiales,")
                     st.link_button("📧 Email", f"mailto:?subject={subject}&body={body}", use_container_width=True)
                 with col4:
-                    # Duplicar cotización
                     if st.button("📋 Duplicar", key=f"dup_{doc_id}", use_container_width=True):
                         st.session_state.cart = q_data.get("cart", [])
                         st.session_state.pdf_ready = False
                         st.switch_page(page_gen)
-
 
 # ==========================================
 # 👥 PAGE: CLIENTES
@@ -933,7 +917,6 @@ def page_clients():
                     except Exception as e:
                         logger.error(f"Client update error: {e}")
                         st.error(f"Error al guardar: {e}")
-
 
 # ==========================================
 # ⚙️ PAGE: PERFIL
@@ -992,15 +975,13 @@ def page_profile():
             final_logo_url = current_logo
 
             if new_logo:
-                # Delete old logo first
                 if current_logo:
                     try:
                         old_path = current_logo.split("/logos/")[1]
                         supabase.storage.from_("logos").remove([old_path])
                     except Exception as e:
-                        logger.warning(f"Could not delete old logo: {e}")
+                        pass
 
-                # Upload new logo
                 file_ext = new_logo.name.split('.')[-1].lower()
                 file_path = f"{st.session_state.user.id}/logo_{int(datetime.now().timestamp())}.{file_ext}"
                 try:
@@ -1011,8 +992,8 @@ def page_profile():
                     )
                     final_logo_url = supabase.storage.from_("logos").get_public_url(file_path)
                 except Exception as e:
-                    logger.error(f"Logo upload error: {e}")
-                    st.error(f"Error técnico al subir logo a Storage: {e}")
+                    st.error(f"Error al subir logo a Storage: {e}")
+                    st.stop()
 
             try:
                 supabase.table("profiles").upsert({
@@ -1030,8 +1011,8 @@ def page_profile():
                 st.session_state.profile_saved = True
                 st.rerun()
             except Exception as e:
-                logger.error(f"Profile save error: {e}")
                 st.error(f"Error de base de datos: {e}")
+                st.stop()
 
     st.subheader("📚 Mi Catálogo")
     if catalog:
@@ -1083,7 +1064,6 @@ def page_profile():
             else:
                 st.warning("La contraseña debe tener al menos 6 caracteres.")
 
-
 # ==========================================
 # 💬 PAGE: SOPORTE
 # ==========================================
@@ -1097,7 +1077,6 @@ def page_support():
         wa_message = urllib.parse.quote("¡Hola Romain! Necesito ayuda o tengo un comentario sobre CotiListo: ")
         st.info("💡 Tu feedback es vital para seguir haciendo crecer esta plataforma.")
         st.link_button("Contactar por WhatsApp 🟢", f"https://wa.me/{wa_number}?text={wa_message}", use_container_width=True)
-
 
 # ==========================================
 # 🔐 PAGE: LOGIN
@@ -1116,7 +1095,6 @@ def process_login():
         logger.warning(f"Login failed: {e}")
         st.session_state.login_error = "Credenciales incorrectas. Verifica tu email y contraseña."
 
-
 def process_registration():
     try:
         supabase.auth.sign_up({
@@ -1128,7 +1106,6 @@ def process_registration():
     except Exception as e:
         logger.warning(f"Registration failed: {e}")
         st.session_state.reg_error = f"Error al registrarse: {e}"
-
 
 def page_login():
     st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
@@ -1212,7 +1189,6 @@ def page_login():
         if st.session_state.get("reg_error"):
             st.error(st.session_state.reg_error)
             st.session_state.reg_error = None
-
 
 # ==========================================
 # 🧭 NAVIGATION & APP ROUTING
