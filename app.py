@@ -4,6 +4,7 @@ import urllib.parse
 import os
 import base64
 from datetime import datetime, timezone
+from calendar import monthrange
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
@@ -165,25 +166,35 @@ def fetch_user_data(force: bool = False):
         return
     uid = st.session_state.user.id
 
-    # On utilise le flag pour ne pas requêter en boucle si l'utilisateur n'a pas de clients ([])
     if force or not st.session_state.get('user_data_loaded'):
-        
-        # 1. Chargement du profil
         try:
             res = supabase.table("profiles").select("*").eq("id", uid).execute()
             st.session_state.user_profile = res.data[0] if res.data else {}
         except Exception as e:
             logger.error(f"Profile fetch error: {e}")
 
-        # 2. Chargement des clients
         try:
             res = supabase.table("clients").select("*").eq("user_id", uid).order("name").execute()
             st.session_state.clients = res.data if res.data else []
         except Exception as e:
             logger.error(f"Clients fetch error: {e}")
-            
-        # 3. Validation du chargement pour la session en cours
+
         st.session_state.user_data_loaded = True
+
+
+def get_quotes_this_month(user_id: str) -> int:
+    """Return count of quotes created this calendar month."""
+    try:
+        now = datetime.now(timezone.utc)
+        first_day = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+        res = supabase.table("quotes").select("id", count="exact") \
+            .eq("user_id", user_id) \
+            .gte("created_at", first_day) \
+            .execute()
+        return res.count or 0
+    except Exception as e:
+        logger.warning(f"Quote count error: {e}")
+        return 0
 
 
 def process_image_for_pdf(image_input_stream) -> io.BytesIO:
@@ -236,20 +247,32 @@ def upload_pdf_to_storage(pdf_bytes: bytes, user_id: str) -> tuple[str, str]:
 # ⚙️ PDF GENERATION ENGINE
 # ==========================================
 def _draw_header(c, width, height, quote_data):
-    """Draw the top section: brand bar, title, date, logo or seller name."""
+    """Draw Option 2 header: light grey background, logo, blue bottom line."""
+    # --- Grey header background ---
+    header_height = 1.4 * inch
+    header_y = height - header_height
+    c.setFillColorRGB(0.97, 0.97, 0.97)  # #F8F8F8
+    c.rect(0, header_y, width, header_height, fill=True, stroke=False)
+
+    # --- Blue accent line at bottom of header ---
     brand_blue = (0.09, 0.44, 0.76)
     c.setFillColorRGB(*brand_blue)
-    c.rect(0, height - 0.15 * inch, width, 0.15 * inch, fill=True, stroke=False)
+    c.rect(0, header_y, width, 0.03 * inch, fill=True, stroke=False)
     c.setFillColorRGB(0, 0, 0)
 
-    c.setFont("Helvetica-Bold", 22)
-    c.drawString(1 * inch, height - 1.0 * inch, "Cotización")
-    c.setFont("Helvetica", 10)
-    c.drawString(1 * inch, height - 1.25 * inch, f"Fecha: {quote_data['date']}")
+    # --- "Cotización" title and date — right aligned ---
+    c.setFillColorRGB(0.2, 0.2, 0.2)
+    c.setFont("Helvetica-Bold", 20)
+    c.drawRightString(width - 0.75 * inch, height - 0.65 * inch, "Cotización")
+    c.setFont("Helvetica", 9)
+    c.setFillColorRGB(0.5, 0.5, 0.5)
+    c.drawRightString(width - 0.75 * inch, height - 0.85 * inch, f"Fecha: {quote_data['date']}")
+    c.setFillColorRGB(0, 0, 0)
 
-    logo_w, logo_h = 2.2 * inch, 1.2 * inch
-    logo_x = width - 1 * inch - logo_w
-    logo_y = height - 1.6 * inch
+    # --- Logo or seller name — left aligned, vertically centered in header ---
+    logo_w, logo_h = 2.0 * inch, 1.0 * inch
+    logo_x = 0.75 * inch
+    logo_y = header_y + (header_height - logo_h) / 2
     logo_drawn = False
 
     image_stream = None
@@ -277,16 +300,19 @@ def _draw_header(c, width, height, quote_data):
             logger.warning(f"Logo draw failed: {e}")
 
     if not logo_drawn and quote_data.get('seller_name'):
-        c.setFont("Helvetica-Bold", 16)
-        tw = c.stringWidth(quote_data['seller_name'], "Helvetica-Bold", 16)
-        c.drawString(width - 1 * inch - tw, height - 1.1 * inch, quote_data['seller_name'])
+        c.setFont("Helvetica-Bold", 15)
+        c.setFillColorRGB(0.2, 0.2, 0.2)
+        c.drawString(logo_x, header_y + (header_height / 2) - 0.1 * inch, quote_data['seller_name'])
+        c.setFillColorRGB(0, 0, 0)
 
 
 def _draw_client_info(c, y_pos, quote_data) -> float:
     """Draw client block, return updated y_pos."""
-    c.setFont("Helvetica", 12)
+    c.setFont("Helvetica-Bold", 11)
+    c.setFillColorRGB(0.2, 0.2, 0.2)
     c.drawString(1 * inch, y_pos, f"Cliente: {quote_data['client_name']}")
-    y_pos -= 0.2 * inch
+    c.setFillColorRGB(0, 0, 0)
+    y_pos -= 0.22 * inch
 
     c.setFont("Helvetica", 10)
     if quote_data.get('display_phone'):
@@ -312,21 +338,38 @@ def _draw_client_info(c, y_pos, quote_data) -> float:
     return y_pos
 
 
-def _draw_items_table(c, y_pos, quote_data) -> float:
-    """Draw the items table header + rows, return updated y_pos."""
+def _draw_items_table(c, y_pos, quote_data, width, height) -> float:
+    """Draw the items table header + rows with multi-page support."""
     y_pos -= 0.4 * inch
-    c.setFillColorRGB(0.93, 0.93, 0.93)
-    c.rect(1 * inch, y_pos - 0.08 * inch, 6.5 * inch, 0.25 * inch, fill=True, stroke=False)
 
-    c.setFillColorRGB(0, 0, 0)
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(1.1 * inch, y_pos, "Descripción")
-    c.drawString(4.5 * inch, y_pos, "Cant.")
-    c.drawString(5.5 * inch, y_pos, f"Total ({quote_data['currency']})")
+    def draw_table_header(y):
+        c.setFillColorRGB(0.09, 0.44, 0.76)
+        c.rect(1 * inch, y - 0.08 * inch, 6.5 * inch, 0.28 * inch, fill=True, stroke=False)
+        c.setFillColorRGB(1, 1, 1)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(1.1 * inch, y, "Descripción")
+        c.drawString(4.5 * inch, y, "Cant.")
+        c.drawString(5.5 * inch, y, f"Total ({quote_data['currency']})")
+        c.setFillColorRGB(0, 0, 0)
+        return y - 0.3 * inch
 
-    y_pos -= 0.3 * inch
+    y_pos = draw_table_header(y_pos)
     c.setFont("Helvetica", 10)
-    for item in quote_data['cart']:
+
+    for idx, item in enumerate(quote_data['cart']):
+        # Multi-page: if too close to footer, create new page
+        if y_pos < 2.5 * inch:
+            c.showPage()
+            y_pos = height - 1 * inch
+            y_pos = draw_table_header(y_pos)
+            c.setFont("Helvetica", 10)
+
+        # Alternating row background
+        if idx % 2 == 0:
+            c.setFillColorRGB(0.98, 0.98, 0.98)
+            c.rect(1 * inch, y_pos - 0.06 * inch, 6.5 * inch, 0.22 * inch, fill=True, stroke=False)
+            c.setFillColorRGB(0, 0, 0)
+
         c.drawString(1.1 * inch, y_pos, item['desc'][:45])
         c.drawString(4.5 * inch, y_pos, str(item['qty']))
         c.drawString(5.5 * inch, y_pos, f"{item['total']:.2f}")
@@ -338,12 +381,16 @@ def _draw_items_table(c, y_pos, quote_data) -> float:
 def _draw_totals(c, y_pos, quote_data) -> float:
     """Draw totals, advance and balance sections."""
     y_pos -= 0.1 * inch
+    c.setStrokeColorRGB(0.09, 0.44, 0.76)
     c.line(4 * inch, y_pos, 7.5 * inch, y_pos)
-    y_pos -= 0.25 * inch
+    c.setStrokeColorRGB(0, 0, 0)
+    y_pos -= 0.28 * inch
 
     c.setFont("Helvetica-Bold", 11)
+    c.setFillColorRGB(0.09, 0.44, 0.76)
     c.drawString(4.2 * inch, y_pos, "Total:")
     c.drawString(5.5 * inch, y_pos, f"{quote_data['currency']} {quote_data['grand_total']:.2f}")
+    c.setFillColorRGB(0, 0, 0)
 
     if quote_data.get('advance_amount', 0) > 0:
         y_pos -= 0.25 * inch
@@ -387,7 +434,7 @@ def _draw_footer(c, width, quote_data):
         c.drawString(2.6 * inch, y_pos, quote_data['terms'][:80])
 
     c.setFont("Helvetica-Oblique", 9)
-    c.setFillColorRGB(0.5, 0.5, 0.5)
+    c.setFillColorRGB(0.6, 0.6, 0.6)
     promo = "Generado con CotiListo.com"
     tw = c.stringWidth(promo, "Helvetica-Oblique", 9)
     c.drawString((width / 2) - (tw / 2), 0.5 * inch, promo)
@@ -400,8 +447,8 @@ def generate_pdf(quote_data: dict) -> bytes:
     width, height = letter
 
     _draw_header(c, width, height, quote_data)
-    y_pos = _draw_client_info(c, height - 1.9 * inch, quote_data)
-    y_pos = _draw_items_table(c, y_pos, quote_data)
+    y_pos = _draw_client_info(c, height - 1.7 * inch, quote_data)
+    y_pos = _draw_items_table(c, y_pos, quote_data, width, height)
     _draw_totals(c, y_pos, quote_data)
     _draw_footer(c, width, quote_data)
 
@@ -465,19 +512,22 @@ def page_free_generator():
         unsafe_allow_html=True
     )
 
+    # --- CTA for non-logged users (top) ---
     if not st.session_state.user:
         with st.container(border=True):
             st.markdown("#### ⚡ Trabaja más rápido")
-            st.write("Guarda tu logo, arma tu catálogo de precios y guarda tu historial. **¡Únete gratis!** 🚀")
-            st.page_link(page_log, label="Crear cuenta gratis / Entrar", icon="✨")
+            st.write("Logo automático, catálogo de precios, historial y enlace WhatsApp inteligente.")
+            st.page_link(page_log, label="✨ Crear cuenta gratis", icon="🚀")
 
-    # --- Currency & template ---
-    default_currency = profile.get("currency", "Q")
+    # --- Contador mensual (logged users only) ---
     if st.session_state.user:
+        count = get_quotes_this_month(st.session_state.user.id)
         col1, col2 = st.columns([1, 2])
+        default_currency = profile.get("currency", "Q")
         currency = col1.radio("Moneda:", ["Q", "$"], index=0 if default_currency == "Q" else 1, horizontal=True)
-        col2.info(f"✨ Modo personalizado: **{profile.get('business_name', 'tu negocio')}**")
+        col2.metric("📊 Cotizaciones este mes", count)
         template = "Personalizado"
+        st.info(f"✨ Modo personalizado: **{profile.get('business_name', 'tu negocio')}**")
     else:
         col1, col2 = st.columns(2)
         currency = col1.radio("Moneda:", ["Q", "$"], horizontal=True)
@@ -495,13 +545,14 @@ def page_free_generator():
         st.success("✅ Logo cargado automáticamente.")
     else:
         uploaded_logo = st.file_uploader("Sube tu logo (PNG, JPG - Máx 2MB)", type=["png", "jpg", "jpeg"])
+        if uploaded_logo:
+            st.image(uploaded_logo, width=100, caption="Logo que aparecerá en tu PDF")
 
     st.divider()
 
     # --- Client info ---
     st.markdown("### 👤 Datos del Cliente")
 
-    # Initialize all client fields with safe defaults
     c_name = ""
     c_phone = ""
     c_email = ""
@@ -597,7 +648,7 @@ def page_free_generator():
             col_c1, col_c2, col_c3 = st.columns([4, 2, 1])
             col_c1.write(f"**{it['qty']}x** {it['desc']}")
             col_c2.write(f"{currency} {it['total']:.2f}")
-            if col_c3.button("❌", key=f"del_{i}"):
+            if col_c3.button("🗑️", key=f"del_{i}", help="Eliminar este item"):
                 st.session_state.cart.pop(i)
                 st.session_state.pdf_ready = False
                 st.rerun()
@@ -616,7 +667,6 @@ def page_free_generator():
 
     st.divider()
 
-    # --- Generate ---
     if st.button("Preparar Cotización ✨", type="primary", use_container_width=True):
         if not c_name:
             st.error("Por favor ingresa el nombre del cliente.")
@@ -648,10 +698,9 @@ def page_free_generator():
                 "terms": profile.get('terms_conditions'),
             }
 
-            with st.spinner("Generando cotización..."):
+            with st.spinner("✨ Creando tu cotización profesional..."):
                 st.session_state.pdf_bytes = generate_pdf(q_data)
                 st.session_state.pdf_ready = True
-                pdf_public_url = ""
                 smart_url = ""
 
                 if st.session_state.user:
@@ -673,7 +722,6 @@ def page_free_generator():
                         quote_id = res.data[0]['id']
                         smart_url = f"{BASE_URL}/?doc={quote_id}"
 
-                        # Upsert client
                         existing_client = next(
                             (c for c in st.session_state.clients if c['name'] == c_name), None
                         )
@@ -691,7 +739,6 @@ def page_free_generator():
                         logger.error(f"DB/Storage error: {e}")
                         st.warning("Cotización generada localmente (error al guardar en la nube).")
 
-                # Build WhatsApp URL
                 if c_phone:
                     clean_phone = ''.join(filter(str.isdigit, c_phone))
                     full_number = f"{phone_prefix}{clean_phone}"
@@ -712,6 +759,10 @@ def page_free_generator():
 
             st.balloons()
 
+            # Reset cart after generation
+            st.session_state.cart = []
+            st.session_state.pdf_ready = True  # Keep True to show action buttons
+
     # --- Action buttons ---
     if st.session_state.get('pdf_ready'):
         st.success(f"¡Cotización lista para {c_name}!")
@@ -730,10 +781,33 @@ def page_free_generator():
                 use_container_width=True,
             )
 
+        # --- CTA post-génération pour utilisateurs non connectés ---
+        if not st.session_state.user:
+            st.divider()
+            with st.container(border=True):
+                st.warning("💡 **¿Te gustó?** Con una cuenta gratuita, tu cliente recibe un enlace directo en WhatsApp y tú guardas el historial automáticamente.")
+                st.page_link(page_log, label="Crear mi cuenta gratis →", icon="✨")
+
 
 # ==========================================
 # 🗂️ PAGE: HISTORY
 # ==========================================
+def _purge_expired_pdfs(user_id: str, quotes: list):
+    """Silently delete physical PDFs older than 30 days from Storage."""
+    for q in quotes:
+        created_date = datetime.fromisoformat(q['created_at'].replace("Z", "+00:00"))
+        days_old = (datetime.now(timezone.utc) - created_date).days
+        if days_old > PDF_LINK_EXPIRY_DAYS and q.get("pdf_url"):
+            try:
+                old_path = q["pdf_url"].split("/quotations/")[1].split("?")[0]
+                supabase.storage.from_("quotations").remove([old_path])
+                supabase.table("quotes").update(
+                    {"pdf_url": None}
+                ).eq("id", q["id"]).execute()
+            except Exception as e:
+                logger.warning(f"Purge failed for quote {q['id']}: {e}")
+
+
 def page_history():
     st.title("🗂️ Historial de Cotizaciones")
     st.markdown("Gestiona, reenvía y actualiza tus documentos.")
@@ -755,7 +829,19 @@ def page_history():
 
     if not quotes:
         st.info("Aún no has creado ninguna cotización.")
+        st.page_link(page_gen, label="➕ Crear mi primera cotización", icon="📝")
         return
+
+    # --- Garbage collection silencieux ---
+    _purge_expired_pdfs(st.session_state.user.id, quotes)
+
+    # --- Búsqueda ---
+    search = st.text_input("🔍 Buscar cliente...", placeholder="Nombre del cliente")
+    if search:
+        quotes = [q for q in quotes if search.lower() in q.get("client_name", "").lower()]
+        if not quotes:
+            st.info("No se encontraron cotizaciones para ese cliente.")
+            return
 
     for q in quotes:
         q_data = q.get("quote_data", {})
@@ -768,11 +854,22 @@ def page_history():
         days_old = (datetime.now(timezone.utc) - created_date).days
         smart_url = f"{BASE_URL}/?doc={doc_id}"
 
-        with st.expander(f"📄 {client_name} — {currency} {total_amount} (Hace {days_old} días)"):
+        status_icon = "⚠️" if days_old > PDF_LINK_EXPIRY_DAYS else "📄"
+        with st.expander(f"{status_icon} {client_name} — {currency} {total_amount} (Hace {days_old} días)"):
             if days_old > PDF_LINK_EXPIRY_DAYS:
                 st.error("⚠️ Este enlace ha expirado para el cliente (>30 días)")
                 if st.button("🔄 Regenerar Cotización", key=f"regen_{doc_id}", use_container_width=True):
                     try:
+                        # 1. Supprimer l'ancien PDF physiquement
+                        old_pdf_url = q.get("pdf_url", "")
+                        if old_pdf_url:
+                            try:
+                                old_path = old_pdf_url.split("/quotations/")[1].split("?")[0]
+                                supabase.storage.from_("quotations").remove([old_path])
+                            except Exception as e:
+                                logger.warning(f"Could not delete old PDF: {e}")
+
+                        # 2. Générer et uploader le nouveau
                         new_pdf_bytes = generate_pdf(q_data)
                         _, new_secure_url = upload_pdf_to_storage(new_pdf_bytes, st.session_state.user.id)
                         supabase.table("quotes").update({
@@ -783,9 +880,9 @@ def page_history():
                         st.rerun()
                     except Exception as e:
                         logger.error(f"Regen error: {e}")
-                        st.error("Error al regenerar.")
+                        st.error(f"Error al regenerar: {e}")
             else:
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.link_button("👁️ Ver Enlace", smart_url, use_container_width=True)
                 with col2:
@@ -804,6 +901,12 @@ def page_history():
                         f"Hola {client_name},\n\nAdjunto el enlace a tu cotización segura:\n{smart_url}\n\nSaludos cordiales,"
                     )
                     st.link_button("📧 Email", f"mailto:?subject={subject}&body={body}", use_container_width=True)
+                with col4:
+                    # Duplicar cotización
+                    if st.button("📋 Duplicar", key=f"dup_{doc_id}", use_container_width=True):
+                        st.session_state.cart = q_data.get("cart", [])
+                        st.session_state.pdf_ready = False
+                        st.switch_page(page_gen)
 
 
 # ==========================================
@@ -837,51 +940,45 @@ def page_clients():
                         st.rerun()
                     except Exception as e:
                         logger.error(f"Client update error: {e}")
-                        st.error("Error al guardar.")
+                        st.error(f"Error al guardar: {e}")
 
 
 # ==========================================
 # ⚙️ PAGE: PERFIL
 # ==========================================
 def page_profile():
-    # --- POST-RERUN TOAST MANAGEMENT ---
     if st.session_state.get("profile_saved"):
         st.toast("¡Perfil guardado con éxito!", icon="✅")
         st.session_state.profile_saved = False
-        
     if st.session_state.get("catalog_saved"):
         st.toast("¡Catálogo actualizado!", icon="📚")
         st.session_state.catalog_saved = False
 
     st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
     st.title("⚙️ Mi Perfil")
-    
     if not st.session_state.user:
         st.warning("Inicia sesión para configurar tu perfil.")
         return
 
     fetch_user_data()
     profile = st.session_state.user_profile
-    catalog = list(profile.get("catalog", []))  # Mutable copy
+    catalog = list(profile.get("catalog", []))
 
     with st.expander("🏢 Negocio, Logo y Banco", expanded=True):
         name = st.text_input("Nombre del Negocio", value=profile.get('business_name', ''))
-        
+
         st.markdown("**🖼️ Logo del Negocio**")
         current_logo = profile.get("logo_url", "")
-        
-        # Upload widget (UI)
         new_logo = st.file_uploader("Sube tu nuevo logo (PNG, JPG - Máx 2MB)", type=["png", "jpg", "jpeg"])
-        
+
         if new_logo:
             st.image(new_logo, width=150, caption="✨ Vista previa del nuevo logo")
             st.info("👇 Haz clic en 'Guardar Cambios' abajo para confirmar y subir el logo.")
         elif current_logo:
             st.image(current_logo, width=150, caption="Logo Actual")
-            
+
         st.divider()
 
-        # UI: Bank fields
         st.markdown("**🏦 Información de Pago**")
         current_bank = profile.get('bank_name', '')
         bank_index = GUATEMALA_BANKS.index(current_bank) if current_bank in GUATEMALA_BANKS else 0
@@ -899,21 +996,19 @@ def page_profile():
         )
         terms = st.text_area("Condiciones", value=profile.get('terms_conditions', ''))
 
-        # SAVE LOGIC: Executes only on button click
         if st.button("💾 Guardar Cambios", type="primary"):
             final_logo_url = current_logo
-            
+
             if new_logo:
-                # 1. Delete old logo if it exists
+                # Delete old logo first
                 if current_logo:
                     try:
                         old_path = current_logo.split("/logos/")[1]
                         supabase.storage.from_("logos").remove([old_path])
                     except Exception as e:
-                        # Silently ignore if already deleted manually
-                        pass 
+                        logger.warning(f"Could not delete old logo: {e}")
 
-                # 2. Upload new logo
+                # Upload new logo
                 file_ext = new_logo.name.split('.')[-1].lower()
                 file_path = f"{st.session_state.user.id}/logo_{int(datetime.now().timestamp())}.{file_ext}"
                 try:
@@ -924,10 +1019,9 @@ def page_profile():
                     )
                     final_logo_url = supabase.storage.from_("logos").get_public_url(file_path)
                 except Exception as e:
-                    st.error(f"Error al subir logo a Storage: {e}")
-                    st.stop()  # Stops execution and prevents rerun
+                    logger.error(f"Logo upload error: {e}")
+                    st.error(f"Error técnico al subir logo a Storage: {e}")
 
-            # 3. Save to DB
             try:
                 supabase.table("profiles").upsert({
                     "id": st.session_state.user.id,
@@ -940,14 +1034,12 @@ def page_profile():
                     "terms_conditions": terms,
                     "catalog": catalog,
                 }).execute()
-                
                 fetch_user_data(force=True)
-                st.session_state.profile_saved = True 
+                st.session_state.profile_saved = True
                 st.rerun()
-                
             except Exception as e:
+                logger.error(f"Profile save error: {e}")
                 st.error(f"Error de base de datos: {e}")
-                st.stop()
 
     st.subheader("📚 Mi Catálogo")
     if catalog:
@@ -1039,7 +1131,7 @@ def process_registration():
             "email": st.session_state.reg_email.strip(),
             "password": st.session_state.reg_pw,
         })
-        st.session_state.reg_msg = "✅ Cuenta creada con éxito. Ya puedes ingresar."
+        st.session_state.reg_msg = "✅ Cuenta creada. Revisa tu correo para confirmar tu cuenta antes de ingresar."
         st.session_state.reg_error = None
     except Exception as e:
         logger.warning(f"Registration failed: {e}")
@@ -1148,7 +1240,7 @@ if st.session_state.user:
             st.session_state.user = None
             st.session_state.user_profile = {}
             st.session_state.clients = []
-            st.session_state.user_data_loaded = False  # 👈 Reset du flag à la déconnexion
+            st.session_state.user_data_loaded = False
             st.rerun()
     pg = st.navigation([page_gen, page_hist, page_crm, page_prof, page_sup])
 else:
