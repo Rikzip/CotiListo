@@ -3,6 +3,7 @@ import io
 import urllib.parse
 import os
 import base64
+import textwrap
 from datetime import datetime, timezone
 from calendar import monthrange
 from reportlab.lib.pagesizes import letter
@@ -82,7 +83,7 @@ def get_supabase_client():
 supabase = get_supabase_client()
 
 # ==========================================
-# 📋 CONSTANTS & TEMPLATES (MOVED TO TOP)
+# 📋 CONSTANTS & TEMPLATES
 # ==========================================
 TEMPLATES = {
     "General": ["Producto básico", "Producto premium", "Servicio general", "Envío / Delivery", "Descuento especial"],
@@ -139,8 +140,8 @@ if "doc" in query_params:
                     st.write(f"**Total:** {quote['currency']} {quote['total_amount']}")
                     pdf_url = quote.get("pdf_url")
                     if pdf_url:
-                        st.components.v1.iframe(pdf_url, width=None, height=800, scrolling=True)
-                        st.markdown(f"#### [🔗 Descargar documento original]({pdf_url})")
+                        st.info("💡 Tu documento está listo y asegurado en la nube.")
+                        st.link_button("📄 Abrir / Descargar PDF", pdf_url, type="primary", use_container_width=True)
                     else:
                         st.warning("El documento ya no está disponible.")
             else:
@@ -263,6 +264,18 @@ def upload_pdf_to_storage(pdf_bytes: bytes, user_id: str) -> tuple[str, str]:
 
     public_url = supabase.storage.from_("quotations").get_public_url(file_name)
     return public_url, secure_url or public_url
+
+def _purge_expired_pdfs(user_id: str, quotes: list):
+    for q in quotes:
+        created_date = datetime.fromisoformat(q['created_at'].replace("Z", "+00:00"))
+        days_old = (datetime.now(timezone.utc) - created_date).days
+        if days_old > PDF_LINK_EXPIRY_DAYS and q.get("pdf_url"):
+            try:
+                old_path = q["pdf_url"].split("/quotations/")[1].split("?")[0]
+                supabase.storage.from_("quotations").remove([old_path])
+                supabase.table("quotes").update({"pdf_url": None}).eq("id", q["id"]).execute()
+            except Exception as e:
+                logger.warning(f"Purge failed for quote {q['id']}: {e}")
 
 # ==========================================
 # ⚙️ PDF GENERATION ENGINE
@@ -419,10 +432,12 @@ def _draw_footer(c, width, quote_data):
     c.setStrokeColorRGB(0, 0, 0)
     y_pos -= 0.2 * inch
 
+    # --- INFORMATIONS DE PAGO ---
     if quote_data.get('bank_name') and quote_data.get('account_number'):
         c.setFont("Helvetica-Bold", 9)
         c.drawString(1 * inch, y_pos, "Información de Pago:")
         c.setFont("Helvetica", 9)
+        
         bank_str = (
             f"{quote_data['bank_name']} - Cuenta "
             f"{quote_data.get('account_type', 'Monetaria')} "
@@ -430,15 +445,30 @@ def _draw_footer(c, width, quote_data):
         )
         if quote_data.get('account_name'):
             bank_str += f" (A nombre de: {quote_data['account_name']})"
-        c.drawString(2.6 * inch, y_pos, bank_str)
-        y_pos -= 0.2 * inch
 
+        # textwrap pour gérer les textes longs
+        wrapped_bank = textwrap.wrap(bank_str, width=75)
+        for line in wrapped_bank:
+            c.drawString(2.6 * inch, y_pos, line)
+            y_pos -= 0.15 * inch
+    else:
+        y_pos -= 0.15 * inch
+
+    y_pos -= 0.05 * inch
+
+    # --- CONDICIONES ---
     if quote_data.get('terms'):
         c.setFont("Helvetica-Bold", 9)
         c.drawString(1 * inch, y_pos, "Condiciones:")
         c.setFont("Helvetica", 9)
-        c.drawString(2.6 * inch, y_pos, quote_data['terms'][:80])
+        
+        # textwrap pour gérer les textes longs
+        wrapped_terms = textwrap.wrap(quote_data['terms'], width=75)
+        for line in wrapped_terms:
+            c.drawString(2.6 * inch, y_pos, line)
+            y_pos -= 0.15 * inch
 
+    # --- FOOTER BRANDING ---
     c.setFont("Helvetica-Oblique", 9)
     c.setFillColorRGB(0.6, 0.6, 0.6)
     promo = "Generado con CotiListo.com"
@@ -489,20 +519,16 @@ def page_free_generator():
         unsafe_allow_html=True
     )
 
-    # --- CTA for non-logged users (top) ---
     if not st.session_state.user:
         with st.container(border=True):
             st.markdown("#### ⚡ Trabaja más rápido")
             st.write("Logo automático, catálogo de precios, historial y enlace WhatsApp inteligente.")
-            
-            # UX: Boutons côte à côte
             col_cta1, col_cta2 = st.columns(2)
             with col_cta1:
                 st.page_link(page_log, label="✨ Crear cuenta gratis")
             with col_cta2:
                 st.page_link(page_log, label="🔑 Ya tengo cuenta")
 
-    # --- Contador mensual (logged users only) ---
     if st.session_state.user:
         count = get_quotes_this_month(st.session_state.user.id)
         col1, col2 = st.columns([1, 2])
@@ -518,7 +544,6 @@ def page_free_generator():
 
     st.divider()
 
-    # --- Seller info ---
     st.markdown("### 🏢 Tu Negocio (Vendedor)")
     seller_name = st.text_input("Tu Nombre o el de tu Negocio", value=profile.get("business_name", ""), placeholder="Ej: Talleres San José")
     uploaded_logo = None
@@ -533,7 +558,6 @@ def page_free_generator():
 
     st.divider()
 
-    # --- Client info ---
     st.markdown("### 👤 Datos del Cliente")
 
     c_name = ""
@@ -577,7 +601,6 @@ def page_free_generator():
         c_email = col_email_input.text_input("Email (Opcional)", placeholder="ejemplo@correo.com")
         c_nit = col_nit_input.text_input("NIT / ID Fiscal", placeholder="Ej: 1234567-8")
 
-    # --- Vehicle fields (mechanic template only) ---
     vehicle_desc, vehicle_plate = "", ""
     if template == "Taller Mecánico / Motos":
         st.divider()
@@ -588,7 +611,6 @@ def page_free_generator():
 
     st.divider()
 
-    # --- Items ---
     st.markdown("### 🛒 Productos o Servicios")
     catalog_options = ["Escribir manualmente..."]
     custom_catalog_map = {}
@@ -729,12 +751,12 @@ def page_free_generator():
                         
                     full_number = f"{phone_prefix}{clean_phone}"
                     wa_msg = (
-                        f"¡Hola {c_name}!\n👋 Te comparto la cotización de "
+                        f"Hola {c_name}.\nTe comparto la cotización de "
                         f"{seller_name or 'nuestro servicio'}.\n"
                         f"El total es de {currency_symbol} {total:.2f}."
                     )
                     if smart_url:
-                        wa_msg += f"\n\n📄 Ver y descargar tu documento aquí:\n{smart_url}"
+                        wa_msg += f"\n\nVer y descargar tu documento aquí:\n{smart_url}"
                     else:
                         wa_msg += "\n\n(Regístrate en CotiListo para enviar el PDF por enlace directo)."
                     st.session_state.wa_url = (
@@ -747,7 +769,6 @@ def page_free_generator():
             st.session_state.cart = []
             st.session_state.pdf_ready = True
 
-    # --- Action buttons ---
     if st.session_state.get('pdf_ready'):
         st.success(f"¡Cotización lista para {c_name}!")
         col_act1, col_act2 = st.columns(2)
@@ -766,7 +787,6 @@ def page_free_generator():
                 use_container_width=True,
             )
 
-        # --- CTA post-génération ---
         if not st.session_state.user:
             st.divider()
             with st.container(border=True):
@@ -780,18 +800,6 @@ def page_free_generator():
 # ==========================================
 # 🗂️ PAGE: HISTORY
 # ==========================================
-def _purge_expired_pdfs(user_id: str, quotes: list):
-    for q in quotes:
-        created_date = datetime.fromisoformat(q['created_at'].replace("Z", "+00:00"))
-        days_old = (datetime.now(timezone.utc) - created_date).days
-        if days_old > PDF_LINK_EXPIRY_DAYS and q.get("pdf_url"):
-            try:
-                old_path = q["pdf_url"].split("/quotations/")[1].split("?")[0]
-                supabase.storage.from_("quotations").remove([old_path])
-                supabase.table("quotes").update({"pdf_url": None}).eq("id", q["id"]).execute()
-            except Exception as e:
-                logger.warning(f"Purge failed for quote {q['id']}: {e}")
-
 def page_history():
     st.title("🗂️ Historial de Cotizaciones")
     st.markdown("Gestiona, reenvía y actualiza tus documentos.")
@@ -848,7 +856,7 @@ def page_history():
                                 old_path = old_pdf_url.split("/quotations/")[1].split("?")[0]
                                 supabase.storage.from_("quotations").remove([old_path])
                             except Exception as e:
-                                logger.warning(f"Could not delete old PDF: {e}")
+                                pass
 
                         new_pdf_bytes = generate_pdf(q_data)
                         _, new_secure_url = upload_pdf_to_storage(new_pdf_bytes, st.session_state.user.id)
@@ -869,15 +877,15 @@ def page_history():
                     client_phone = q_data.get("display_phone", "")
                     if client_phone:
                         clean_phone = ''.join(filter(str.isdigit, client_phone))
-                        wa_msg = f"¡Hola {client_name}! Te comparto nuevamente el enlace de tu cotización:\n{smart_url}"
-                        wa_url = f"https://wa.me/{clean_phone}?text={urllib.parse.quote(wa_msg)}"
+                        wa_msg = f"Hola {client_name}. Te comparto nuevamente el enlace de tu cotización:\n{smart_url}"
+                        wa_url = f"https://wa.me/{clean_phone}?text={urllib.parse.quote(wa_msg.encode('utf-8'))}"
                         st.link_button("💬 WhatsApp", wa_url, use_container_width=True)
                     else:
                         st.button("💬 WhatsApp", disabled=True, key=f"wa_dis_{doc_id}",
                                   help="No hay teléfono registrado", use_container_width=True)
                 with col3:
-                    subject = urllib.parse.quote(f"Tu Cotización - {client_name}")
-                    body = urllib.parse.quote(f"Hola {client_name},\n\nAdjunto el enlace a tu cotización segura:\n{smart_url}\n\nSaludos cordiales,")
+                    subject = urllib.parse.quote(f"Tu Cotización - {client_name}".encode('utf-8'))
+                    body = urllib.parse.quote(f"Hola {client_name},\n\nAdjunto el enlace a tu cotización segura:\n{smart_url}\n\nSaludos cordiales,".encode('utf-8'))
                     st.link_button("📧 Email", f"mailto:?subject={subject}&body={body}", use_container_width=True)
                 with col4:
                     if st.button("📋 Duplicar", key=f"dup_{doc_id}", use_container_width=True):
@@ -1074,7 +1082,7 @@ def page_support():
         st.write("¿Tienes alguna duda, sugerencia o encontraste un error en CotiListo?")
         st.write("¡Escríbeme directamente! Me encantaría saber cómo puedo mejorar la herramienta para ti.")
         wa_number = "50259714667"
-        wa_message = urllib.parse.quote("¡Hola Romain! Necesito ayuda o tengo un comentario sobre CotiListo: ")
+        wa_message = urllib.parse.quote("Hola Romain. Necesito ayuda o tengo un comentario sobre CotiListo: ")
         st.info("💡 Tu feedback es vital para seguir haciendo crecer esta plataforma.")
         st.link_button("Contactar por WhatsApp 🟢", f"https://wa.me/{wa_number}?text={wa_message}", use_container_width=True)
 
