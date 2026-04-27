@@ -27,7 +27,7 @@ PDF_SIGNED_URL_SECONDS = PDF_LINK_EXPIRY_DAYS * 86400  # 30 days in seconds
 
 st.set_page_config(
     page_title="CotiListo - Cotizaciones",
-    page_icon="⚡",
+    page_icon="favicon.png",  # 👈 SEULE MODIFICATION ICI
     layout="centered",
     initial_sidebar_state="auto"
 )
@@ -178,6 +178,7 @@ _defaults = {
     'wa_url': "",
     'smart_url': "",
     'last_client_name': "",
+    'last_client_email': "",
     'user': None,
     'user_profile': {},
     'clients': [],
@@ -728,6 +729,7 @@ def page_free_generator():
             q_data = {
                 "date": datetime.now().strftime("%d/%m/%Y"),
                 "client_name": c_name,
+                "client_email": c_email,
                 "display_phone": display_phone,
                 "client_nit": c_nit,
                 "currency": currency_symbol,
@@ -808,8 +810,9 @@ def page_free_generator():
                 else:
                     st.session_state.wa_url = ""
 
-            # Store client name for display after rerun
+            # Store client info for display after rerun
             st.session_state.last_client_name = c_name
+            st.session_state.last_client_email = c_email
             st.session_state.pdf_ready = True
             st.session_state.cart = []
             st.balloons()
@@ -829,11 +832,12 @@ def page_free_generator():
 
         with col_act2:
             link_to_send = st.session_state.get('smart_url') or "(Enlace no disponible - adjunta el PDF)"
+            email_to = st.session_state.get('last_client_email', '')
             subject = urllib.parse.quote(f"Tu Cotización - {display_name}".encode('utf-8'))
             body = urllib.parse.quote(
                 f"Hola {display_name},\n\nAdjunto el enlace a tu cotización segura:\n{link_to_send}\n\nSaludos cordiales,".encode('utf-8')
             )
-            st.link_button("📧 Email", f"mailto:?subject={subject}&body={body}", use_container_width=True)
+            st.link_button("📧 Email", f"mailto:{email_to}?subject={subject}&body={body}", use_container_width=True)
 
         with col_act3:
             safe_name = "".join(ch for ch in display_name if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
@@ -939,6 +943,7 @@ def page_history():
             else:
                 # Build action URLs
                 client_phone = q_data.get("display_phone", "")
+                client_email = q_data.get("client_email", "")
                 clean_phone = ''.join(filter(str.isdigit, client_phone))
                 wa_msg = f"Hola {client_name}. Te comparto nuevamente el enlace de tu cotización:\n{smart_url}"
                 wa_url = f"https://wa.me/{clean_phone}?text={urllib.parse.quote(wa_msg.encode('utf-8'))}" if clean_phone else ""
@@ -950,14 +955,14 @@ def page_history():
                 # Row 1: Ver, WhatsApp, Email
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.markdown(f"[👁️ Ver Enlace]({smart_url})")
+                    st.link_button("👁️ Ver", smart_url, use_container_width=True)
                 with col2:
                     if wa_url:
-                        st.markdown(f"[💬 WhatsApp]({wa_url})")
+                        st.link_button("💬 WhatsApp", wa_url, use_container_width=True)
                     else:
-                        st.caption("Sin teléfono")
+                        st.button("💬 WhatsApp", disabled=True, use_container_width=True)
                 with col3:
-                    st.markdown(f"[📧 Email](mailto:?subject={subject}&body={body})")
+                    st.link_button("📧 Email", f"mailto:{client_email}?subject={subject}&body={body}", use_container_width=True)
 
                 # Row 2: Duplicar, Eliminar
                 col4, col5 = st.columns(2)
@@ -1334,6 +1339,8 @@ if st.session_state.user:
             st.session_state.clients = []
             st.session_state.user_data_loaded = False
             st.session_state.quotes_this_month = 0
+            st.session_state.last_client_name = ""
+            st.session_state.last_client_email = ""
             st.rerun()
     pg = st.navigation([page_gen, page_hist, page_crm, page_prof, page_sup])
 else:
