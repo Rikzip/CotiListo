@@ -1376,14 +1376,17 @@ if st.session_state.user:
 
             **En Android (Chrome):**
             1. Toca los **⋮** (arriba a la derecha).
-            2. Selecciona **"Instalar aplicación"** o **"Agregar a la pantalla principal"**.
+            2. Selecciona **"Agregar a la pantalla principal"**.
+            """)
+            
+            # Affichage du tutoriel GIF optimisé
+            st.image("tutorial_android.gif", use_container_width=True)
 
+            st.markdown("""
+            ---
             **En iPhone (Safari):**
             1. Toca el ícono de **Compartir** (cuadrado con flecha ↑).
             2. Desliza hacia abajo y selecciona **"Agregar a inicio"**.
-
-            ---
-            🎥 **[Ver tutorial de instalación](ENLACE_AQUI)**
             """)
 
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
