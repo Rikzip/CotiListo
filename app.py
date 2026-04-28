@@ -68,6 +68,47 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
+# 📱 PWA & MOBILE OPTIMIZATION
+# ==========================================
+import streamlit.components.v1 as components
+
+def inject_pwa_metadata():
+    components.html(
+        """
+        <script>
+        const doc = window.parent.document;
+
+        // Force app title
+        doc.title = "CotiListo";
+
+        // Inject PWA meta tags into <head>
+        const metaTags = [
+            {name: 'apple-mobile-web-app-title',        content: 'CotiListo'},
+            {name: 'application-name',                   content: 'CotiListo'},
+            {name: 'apple-mobile-web-app-capable',       content: 'yes'},
+            {name: 'apple-mobile-web-app-status-bar-style', content: 'default'},
+            {name: 'theme-color',                        content: '#0F529B'},
+            {name: 'viewport',                           content: 'width=device-width, initial-scale=1, maximum-scale=1'}
+        ];
+
+        metaTags.forEach(tag => {
+            let el = doc.querySelector(`meta[name="${tag.name}"]`);
+            if (!el) {
+                el = doc.createElement('meta');
+                el.name = tag.name;
+                doc.head.appendChild(el);
+            }
+            el.content = tag.content;
+        });
+        </script>
+        """,
+        height=0,
+        scrolling=False
+    )
+
+inject_pwa_metadata()
+
+# ==========================================
 # 🔑 SUPABASE CONNECTION
 # ==========================================
 @st.cache_resource
@@ -1332,6 +1373,18 @@ page_log = st.Page(page_login, title="Entrar / Registro", icon="🔐")
 if st.session_state.user:
     with st.sidebar:
         st.write(f"👤 {st.session_state.user.email}")
+
+        with st.expander("📲 Instalar CotiListo como App"):
+            st.markdown("""
+            Accede más rápido desde tu teléfono:
+
+            **Android (Chrome):**
+            Toca los ⋮ → **"Instalar aplicación"**
+
+            **iPhone (Safari):**
+            Toca **↑** → **"En la pantalla de inicio"**
+            """)
+
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
             supabase.auth.sign_out()
             st.session_state.user = None
