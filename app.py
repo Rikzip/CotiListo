@@ -27,7 +27,7 @@ PDF_SIGNED_URL_SECONDS = PDF_LINK_EXPIRY_DAYS * 86400  # 30 days in seconds
 
 st.set_page_config(
     page_title="CotiListo - Cotizaciones",
-    page_icon="favicon.png",  # 👈 SEULE MODIFICATION ICI
+    page_icon="favicon.png",  
     layout="centered",
     initial_sidebar_state="auto"
 )
