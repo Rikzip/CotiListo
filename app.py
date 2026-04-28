@@ -13,6 +13,7 @@ import urllib.request
 from supabase import create_client, Client, ClientOptions
 from PIL import Image
 import logging
+import streamlit.components.v1 as components
 
 # ==========================================
 # 📱 GLOBAL CONFIGURATION
@@ -27,7 +28,7 @@ PDF_SIGNED_URL_SECONDS = PDF_LINK_EXPIRY_DAYS * 86400  # 30 days in seconds
 
 st.set_page_config(
     page_title="CotiListo - Cotizaciones",
-    page_icon="favicon.png",  
+    page_icon="favicon.png",
     layout="centered",
     initial_sidebar_state="auto"
 )
@@ -70,25 +71,20 @@ st.markdown("""
 # ==========================================
 # 📱 PWA & MOBILE OPTIMIZATION
 # ==========================================
-import streamlit.components.v1 as components
-
 def inject_pwa_metadata():
     components.html(
         """
         <script>
         const doc = window.parent.document;
 
-        // Force app title
-        doc.title = "CotiListo";
-
         // Inject PWA meta tags into <head>
         const metaTags = [
-            {name: 'apple-mobile-web-app-title',        content: 'CotiListo'},
-            {name: 'application-name',                   content: 'CotiListo'},
-            {name: 'apple-mobile-web-app-capable',       content: 'yes'},
-            {name: 'apple-mobile-web-app-status-bar-style', content: 'default'},
-            {name: 'theme-color',                        content: '#0F529B'},
-            {name: 'viewport',                           content: 'width=device-width, initial-scale=1, maximum-scale=1'}
+            {name: 'apple-mobile-web-app-title',             content: 'CotiListo'},
+            {name: 'application-name',                        content: 'CotiListo'},
+            {name: 'apple-mobile-web-app-capable',            content: 'yes'},
+            {name: 'apple-mobile-web-app-status-bar-style',   content: 'default'},
+            {name: 'theme-color',                             content: '#0F529B'},
+            {name: 'viewport',                                content: 'width=device-width, initial-scale=1, maximum-scale=1'}
         ];
 
         metaTags.forEach(tag => {
@@ -1378,11 +1374,16 @@ if st.session_state.user:
             st.markdown("""
             Accede más rápido desde tu teléfono:
 
-            **Android (Chrome):**
-            Toca los ⋮ → **"Instalar aplicación"**
+            **En Android (Chrome):**
+            1. Toca los **⋮** (arriba a la derecha).
+            2. Selecciona **"Instalar aplicación"** o **"Agregar a la pantalla principal"**.
 
-            **iPhone (Safari):**
-            Toca **↑** → **"En la pantalla de inicio"**
+            **En iPhone (Safari):**
+            1. Toca el ícono de **Compartir** (cuadrado con flecha ↑).
+            2. Desliza hacia abajo y selecciona **"Agregar a inicio"**.
+
+            ---
+            🎥 **[Ver tutorial de instalación](ENLACE_AQUI)**
             """)
 
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
