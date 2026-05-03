@@ -212,6 +212,11 @@ if "doc" in query_params:
     doc_id = query_params["doc"]
     st.empty()
 
+    if st.session_state.get('user'):
+        if st.button("⬅️ Volver a la aplicación", use_container_width=True):
+            st.query_params.clear()
+            st.rerun()
+
     if os.path.exists("logo_cotilisto.png"):
         try:
             with open("logo_cotilisto.png", "rb") as f:
@@ -255,9 +260,22 @@ if "doc" in query_params:
                 else:
                     st.write(f"**Total:** {quote['currency']} {float(quote['total_amount']):.2f}")
                     pdf_url = quote.get("pdf_url")
+                    
                     if pdf_url:
                         st.info("💡 Tu documento está listo y asegurado en la nube.")
-                        st.link_button("📄 Abrir / Descargar PDF", pdf_url, type="primary", use_container_width=True)
+                        col_v1, col_v2 = st.columns(2)
+                        with col_v1:
+                            st.link_button("👁️ Abrir Documento", pdf_url, use_container_width=True)
+                        with col_v2:
+                            try:
+                                req = urllib.request.Request(pdf_url, headers={'User-Agent': 'Mozilla/5.0'})
+                                with urllib.request.urlopen(req, timeout=5) as response:
+                                    pdf_b = response.read()
+                                safe_n = "".join(ch for ch in quote['client_name'] if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
+                                f_name = f"{q_num}_{safe_n}.pdf" if q_num else f"COT_{safe_n}.pdf"
+                                st.download_button("📥 Descargar PDF", data=pdf_b, file_name=f_name, mime="application/pdf", use_container_width=True, type="primary")
+                            except Exception:
+                                st.link_button("📥 Descargar PDF", pdf_url, use_container_width=True, type="primary")
                     else:
                         st.warning("El documento ya no está disponible.")
             else:
@@ -307,7 +325,6 @@ for k, v in _defaults.items():
 # ==========================================
 # 🍪 AUTO-RESTORE SESSION ON APP LOAD
 # ==========================================
-# Micro-rerun trick to allow the browser to inject LocalStorage to the backend
 if "boot_rerun" not in st.session_state:
     st.session_state.boot_rerun = True
     st.rerun()
@@ -550,7 +567,8 @@ def _draw_items_table(c, y_pos, quote_data, width, height) -> float:
         c.setFont("Helvetica-Bold", 10)
         c.drawString(1.1 * inch, y, "Descripción")
         c.drawString(4.5 * inch, y, "Cant.")
-        c.drawString(5.5 * inch, y, f"Precio ({quote_data['currency']})")
+        c.drawString(5.2 * inch, y, "P. Unitario")
+        c.drawString(6.4 * inch, y, f"Total ({quote_data['currency']})")
         c.setFillColorRGB(0, 0, 0)
         return y - 0.3 * inch
 
@@ -571,7 +589,8 @@ def _draw_items_table(c, y_pos, quote_data, width, height) -> float:
 
         c.drawString(1.1 * inch, y_pos, item['desc'][:45])
         c.drawString(4.5 * inch, y_pos, str(item['qty']))
-        c.drawString(5.5 * inch, y_pos, f"{item['total']:.2f}")
+        c.drawString(5.2 * inch, y_pos, f"{item['price']:.2f}")
+        c.drawString(6.4 * inch, y_pos, f"{item['total']:.2f}")
         y_pos -= 0.25 * inch
 
     return y_pos
@@ -580,7 +599,7 @@ def _draw_items_table(c, y_pos, quote_data, width, height) -> float:
 def _draw_totals(c, y_pos, quote_data) -> float:
     y_pos -= 0.1 * inch
     c.setStrokeColorRGB(0.09, 0.44, 0.76)
-    c.line(4 * inch, y_pos, 7.5 * inch, y_pos)
+    c.line(4.5 * inch, y_pos, 7.5 * inch, y_pos)
     c.setStrokeColorRGB(0, 0, 0)
     y_pos -= 0.25 * inch
 
@@ -592,38 +611,42 @@ def _draw_totals(c, y_pos, quote_data) -> float:
 
     c.setFont("Helvetica", 10)
 
-    c.drawString(4.2 * inch, y_pos, "Subtotal:")
-    c.drawString(5.5 * inch, y_pos, f"{currency} {subtotal:.2f}")
+    c.drawString(4.7 * inch, y_pos, "Subtotal:")
+    c.drawString(6.4 * inch, y_pos, f"{currency} {subtotal:.2f}")
     y_pos -= 0.22 * inch
 
     if discount_amount > 0:
         c.setFillColorRGB(0.8, 0.1, 0.1)
-        c.drawString(4.2 * inch, y_pos, "Descuento:")
-        c.drawString(5.5 * inch, y_pos, f"- {currency} {discount_amount:.2f}")
+        discount_label = "Descuento:"
+        if quote_data.get('discount_type') == "Porcentaje (%)" and quote_data.get('discount_pct'):
+            discount_label = f"Descuento ({quote_data['discount_pct']}%):"
+            
+        c.drawString(4.7 * inch, y_pos, discount_label)
+        c.drawString(6.4 * inch, y_pos, f"- {currency} {discount_amount:.2f}")
         c.setFillColorRGB(0, 0, 0)
         y_pos -= 0.22 * inch
 
     if iva_amount > 0:
-        c.drawString(4.2 * inch, y_pos, f"IVA ({int(IVA_RATE * 100)}%):")
-        c.drawString(5.5 * inch, y_pos, f"{currency} {iva_amount:.2f}")
+        c.drawString(4.7 * inch, y_pos, f"IVA ({int(IVA_RATE * 100)}%):")
+        c.drawString(6.4 * inch, y_pos, f"{currency} {iva_amount:.2f}")
         y_pos -= 0.22 * inch
 
     y_pos -= 0.05 * inch
     c.setFont("Helvetica-Bold", 11)
     c.setFillColorRGB(0.09, 0.44, 0.76)
-    c.drawString(4.2 * inch, y_pos, "TOTAL:")
-    c.drawString(5.5 * inch, y_pos, f"{currency} {grand_total:.2f}")
+    c.drawString(4.7 * inch, y_pos, "TOTAL:")
+    c.drawString(6.4 * inch, y_pos, f"{currency} {grand_total:.2f}")
     c.setFillColorRGB(0, 0, 0)
     y_pos -= 0.28 * inch
 
     if quote_data.get('advance_amount', 0) > 0:
         c.setFont("Helvetica", 10)
-        c.drawString(4.2 * inch, y_pos, "Anticipo Requerido:")
-        c.drawString(5.5 * inch, y_pos, f"{currency} {quote_data['advance_amount']:.2f}")
+        c.drawString(4.7 * inch, y_pos, "Anticipo Requerido:")
+        c.drawString(6.4 * inch, y_pos, f"{currency} {quote_data['advance_amount']:.2f}")
         y_pos -= 0.2 * inch
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(4.2 * inch, y_pos, "Saldo a Pagar:")
-        c.drawString(5.5 * inch, y_pos, f"{currency} {quote_data['balance_due']:.2f}")
+        c.drawString(4.7 * inch, y_pos, "Saldo a Pagar:")
+        c.drawString(6.4 * inch, y_pos, f"{currency} {quote_data['balance_due']:.2f}")
 
     return y_pos
 
@@ -764,7 +787,7 @@ def page_free_generator():
         sel_c = st.selectbox("Buscar cliente:", client_options)
 
         if sel_c == "➕ Crear nuevo (ingresa datos abajo)":
-            c_name = st.text_input("Nombre Cliente")
+            c_name = st.text_input("Nombre completo o Empresa", placeholder="Ej: Maria Lopez o Taller San José")
             col_cc, col_phone_input = st.columns([1, 2])
             selected_country = col_cc.selectbox("País", list(COUNTRY_CODES.keys()))
             phone_prefix = COUNTRY_CODES[selected_country]
@@ -784,7 +807,7 @@ def page_free_generator():
             c_email = col_email_input.text_input("Email (Opcional)", value=c_data.get('email', ''))
             c_nit = col_nit_input.text_input("NIT / ID Fiscal", value=c_data.get('nit', ''))
     else:
-        c_name = st.text_input("Nombre Cliente", placeholder="Ej: Maria Lopez")
+        c_name = st.text_input("Nombre completo o Empresa", placeholder="Ej: Maria Lopez o Taller San José")
         col_cc, col_phone_input = st.columns([1, 2])
         selected_country = col_cc.selectbox("País", list(COUNTRY_CODES.keys()))
         phone_prefix = COUNTRY_CODES[selected_country]
@@ -832,7 +855,7 @@ def page_free_generator():
     item_desc = st.text_input("Descripción", value=auto_desc)
     col3, col4 = st.columns(2)
     item_qty = col3.number_input("Cant.", min_value=1, value=1)
-    item_price = col4.number_input("Precio", min_value=0.0, value=auto_price)
+    item_price = col4.number_input("Precio Unitario", min_value=0.0, value=auto_price)
 
     if st.button("➕ Agregar"):
         if item_desc and item_price > 0:
@@ -862,7 +885,10 @@ def page_free_generator():
     st.markdown("### 💰 Descuentos e Impuestos")
     col_disc1, col_disc2 = st.columns(2)
     discount_type = col_disc1.radio("Tipo de descuento:", ["Sin descuento", "Monto fijo", "Porcentaje (%)"], horizontal=False)
+    
     discount_value = 0.0
+    disc_pct = 0.0
+    
     if discount_type == "Monto fijo":
         discount_value = col_disc2.number_input(f"Descuento ({currency})", min_value=0.0, value=0.0)
     elif discount_type == "Porcentaje (%)":
@@ -877,7 +903,10 @@ def page_free_generator():
 
     st.markdown(f"**Subtotal:** {currency} {subtotal:.2f}")
     if discount_value > 0:
-        st.markdown(f"**Descuento:** - {currency} {discount_value:.2f}")
+        if discount_type == "Porcentaje (%)":
+            st.markdown(f"**Descuento ({disc_pct}%):** - {currency} {discount_value:.2f}")
+        else:
+            st.markdown(f"**Descuento:** - {currency} {discount_value:.2f}")
     if iva_amount > 0:
         st.markdown(f"**IVA (12%):** {currency} {iva_amount:.2f}")
     st.markdown(f"#### Total: {currency} {grand_total:.2f}")
@@ -933,6 +962,8 @@ def page_free_generator():
                 "cart": st.session_state.cart,
                 "subtotal": subtotal,
                 "discount_amount": discount_value,
+                "discount_type": discount_type,
+                "discount_pct": disc_pct,
                 "iva_amount": iva_amount,
                 "grand_total": grand_total,
                 "advance_amount": advance_amount,
@@ -1038,10 +1069,16 @@ def page_free_generator():
             st.link_button("📧 Email", f"mailto:{email_to}?subject={subject}&body={body}", use_container_width=True)
         with col_act3:
             safe_name = "".join(ch for ch in display_name if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
+            
+            q_num = ""
+            if st.session_state.user:
+                q_num = get_quote_number(st.session_state.user.id, datetime.now().year, st.session_state.total_quotes_count)
+            dl_name = f"{q_num}_{safe_name}.pdf" if q_num else f"COT_{safe_name}.pdf"
+            
             st.download_button(
                 label="📥 Descargar",
                 data=st.session_state.pdf_bytes,
-                file_name=f"Cotizacion_{safe_name}.pdf",
+                file_name=dl_name,
                 mime="application/pdf",
                 use_container_width=True,
             )
@@ -1137,16 +1174,16 @@ def page_history():
                 key=f"notes_{doc_id}",
                 height=70
             )
-            if new_notes != internal_notes:
-                if st.button("💾 Guardar nota", key=f"save_notes_{doc_id}"):
-                    try:
-                        supabase.table("quotes").update(
-                            {"internal_notes": new_notes}
-                        ).eq("id", doc_id).execute()
-                        st.toast("Nota guardada ✅")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error al guardar nota: {e}")
+            
+            if st.button("💾 Guardar nota", key=f"save_notes_{doc_id}"):
+                try:
+                    supabase.table("quotes").update(
+                        {"internal_notes": new_notes}
+                    ).eq("id", doc_id).execute()
+                    st.toast("Nota guardada ✅")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al guardar nota: {e}")
 
             if days_old > PDF_LINK_EXPIRY_DAYS and status != "ganada":
                 st.error("⚠️ Este enlace ha expirado para el cliente (>30 días)")
@@ -1176,7 +1213,9 @@ def page_history():
                 clean_phone = ''.join(filter(str.isdigit, client_phone))
 
                 wa_send_url = f"https://wa.me/{clean_phone}?text={urllib.parse.quote(('Hola ' + client_name + '. Te comparto el enlace de tu cotización:\n' + smart_url).encode('utf-8'))}" if clean_phone else ""
-                wa_followup_url = f"https://wa.me/{clean_phone}?text={urllib.parse.quote(('Hola ' + client_name + ', ¿tuviste la oportunidad de revisar la cotización que te envié? Quedo a tu disposición para cualquier consulta.').encode('utf-8'))}" if clean_phone else ""
+                
+                wa_followup_msg = f"Hola {client_name}, ¿tuviste la oportunidad de revisar la cotización que te envié? Puedes verla aquí:\n{smart_url}\n\nQuedo a tu disposición."
+                wa_followup_url = f"https://wa.me/{clean_phone}?text={urllib.parse.quote(wa_followup_msg.encode('utf-8'))}" if clean_phone else ""
 
                 subject = urllib.parse.quote(f"Tu Cotización - {client_name}".encode('utf-8'))
                 body = urllib.parse.quote(
@@ -1185,29 +1224,30 @@ def page_history():
 
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.link_button("👁️ Ver", smart_url, use_container_width=True)
+                    target_url = q.get("pdf_url") or smart_url
+                    st.link_button("👁️ Ver", target_url, use_container_width=True)
                 with col2:
                     if wa_send_url:
                         st.link_button("💬 WhatsApp", wa_send_url, use_container_width=True)
                     else:
                         st.button("💬 WhatsApp", disabled=True, use_container_width=True)
                 with col3:
-                    st.link_button("📧 Email", f"mailto:{client_email}?subject={subject}&body={body}", use_container_width=True)
+                    try:
+                        temp_pdf_bytes = generate_pdf(q_data)
+                        safe_name = "".join(ch for ch in client_name if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
+                        dl_name = f"{quote_number}_{safe_name}.pdf" if quote_number else f"COT_{safe_name}.pdf"
+                        st.download_button("📥 Descargar", data=temp_pdf_bytes, file_name=dl_name, mime="application/pdf", use_container_width=True, key=f"dl_{doc_id}")
+                    except Exception:
+                        st.button("📥 Descargar", disabled=True, use_container_width=True, key=f"dl_err_{doc_id}")
 
                 col4, col5, col6 = st.columns(3)
                 with col4:
                     if wa_followup_url:
-                        st.link_button("🔔 Seguimiento", wa_followup_url, use_container_width=True)
+                        st.link_button("💬 Seguimiento WA", wa_followup_url, use_container_width=True)
                     else:
-                        st.button("🔔 Seguimiento", disabled=True, use_container_width=True)
+                        st.button("💬 Seguimiento WA", disabled=True, use_container_width=True)
                 with col5:
-                    components.html(f"""
-                        <button onclick="navigator.clipboard.writeText('{smart_url}').then(() => alert('¡Enlace copiado!'))"
-                            style="width:100%;padding:6px;background:#f0f2f6;border:1px solid #d0d3da;
-                                   border-radius:4px;cursor:pointer;font-size:14px;">
-                            📋 Copiar enlace
-                        </button>
-                    """, height=40)
+                    st.link_button("📧 Email", f"mailto:{client_email}?subject={subject}&body={body}", use_container_width=True)
                 with col6:
                     if st.button("📋 Duplicar", key=f"dup_{doc_id}", use_container_width=True):
                         st.session_state.cart = q_data.get("cart", [])
@@ -1281,13 +1321,14 @@ def page_clients():
     for c in st.session_state.clients:
         with st.container(border=True):
             with st.expander(f"👤 **{c['name']}**"):
+                new_name = st.text_input("Nombre completo o Empresa", value=c.get('name', ''), key=f"n_{c['id']}")
                 new_phone = st.text_input("Teléfono", value=c.get('phone', ''), key=f"p_{c['id']}")
                 new_email = st.text_input("Email", value=c.get('email', ''), key=f"e_{c['id']}")
-                new_nit = st.text_input("NIT / ID Fiscal", value=c.get('nit', ''), key=f"n_{c['id']}")
+                new_nit = st.text_input("NIT / ID Fiscal", value=c.get('nit', ''), key=f"nit_{c['id']}")
                 if st.button("💾 Guardar", key=f"btn_{c['id']}"):
                     try:
                         supabase.table("clients").update({
-                            "phone": new_phone, "email": new_email, "nit": new_nit
+                            "name": new_name, "phone": new_phone, "email": new_email, "nit": new_nit
                         }).eq("id", c['id']).execute()
                         fetch_user_data(force=True)
                         st.success("¡Actualizado!")
