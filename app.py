@@ -726,7 +726,7 @@ def page_free_generator():
         default_currency = profile.get("default_currency", "Q")
         currency = st.radio("Moneda de esta cotización:", ["Q", "$"], index=0 if default_currency == "Q" else 1, horizontal=True)
         template = "Personalizado"
-        st.info(f"✨ Modo personalizado: **{profile.get('business_name', 'tu negocio')}**")
+        st.success(f"🟢 Conectado: **{profile.get('business_name', 'tu negocio')}**")
     else:
         col1, col2 = st.columns(2)
         currency = col1.radio("Moneda:", ["Q", "$"], horizontal=True)
