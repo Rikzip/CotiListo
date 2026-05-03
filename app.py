@@ -35,6 +35,7 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
+# UI Cleanup
 st.markdown("""
     <style>
     .block-container { padding-top: 3rem !important; padding-bottom: 1rem !important; }
@@ -306,6 +307,7 @@ for k, v in _defaults.items():
 # ==========================================
 # 🍪 AUTO-RESTORE SESSION ON APP LOAD
 # ==========================================
+# Micro-rerun trick to allow the browser to inject LocalStorage to the backend
 if "boot_rerun" not in st.session_state:
     st.session_state.boot_rerun = True
     st.rerun()
@@ -435,33 +437,48 @@ def _purge_expired_pdfs(user_id: str, quotes: list):
 def _draw_header(c, width, height, quote_data):
     header_height = 1.4 * inch
     header_y = height - header_height
+    
+    # Background and blue accent
     c.setFillColorRGB(0.97, 0.97, 0.97)
     c.rect(0, header_y, width, header_height, fill=True, stroke=False)
     c.setFillColorRGB(0.09, 0.44, 0.76)
     c.rect(0, header_y, width, 0.03 * inch, fill=True, stroke=False)
 
+    # ==========================================
+    # RIGHT SIDE: TEXT INFORMATION
+    # ==========================================
+    # 1. Business Name (Top Right)
+    if quote_data.get('seller_name'):
+        c.setFont("Helvetica-Bold", 12)
+        c.setFillColorRGB(0.2, 0.2, 0.2)
+        c.drawRightString(width - 0.75 * inch, height - 0.35 * inch, quote_data['seller_name'])
+
+    # 2. Document Title
     c.setFillColorRGB(0.2, 0.2, 0.2)
     c.setFont("Helvetica-Bold", 20)
-    c.drawRightString(width - 0.75 * inch, height - 0.58 * inch, "Cotización")
+    c.drawRightString(width - 0.75 * inch, height - 0.62 * inch, "Cotización")
 
+    # 3. Quote Number
     if quote_data.get('quote_number'):
-        c.setFont("Helvetica", 9)
+        c.setFont("Helvetica-Bold", 10)
         c.setFillColorRGB(0.09, 0.44, 0.76)
-        c.drawRightString(width - 0.75 * inch, height - 0.76 * inch, quote_data['quote_number'])
+        c.drawRightString(width - 0.75 * inch, height - 0.82 * inch, quote_data['quote_number'])
 
+    # 4. Dates
     c.setFont("Helvetica", 9)
     c.setFillColorRGB(0.5, 0.5, 0.5)
-    c.drawRightString(width - 0.75 * inch, height - 0.92 * inch, f"Fecha: {quote_data['date']}")
+    c.drawRightString(width - 0.75 * inch, height - 1.02 * inch, f"Fecha: {quote_data['date']}")
 
     if quote_data.get('validity_date'):
-        c.drawRightString(width - 0.75 * inch, height - 1.06 * inch, f"Válida hasta: {quote_data['validity_date']}")
+        c.drawRightString(width - 0.75 * inch, height - 1.18 * inch, f"Válida hasta: {quote_data['validity_date']}")
 
+    # ==========================================
+    # LEFT SIDE: LOGO
+    # ==========================================
     c.setFillColorRGB(0, 0, 0)
-
     logo_w, logo_h = 2.0 * inch, 1.0 * inch
     logo_x = 0.75 * inch
     logo_y = header_y + (header_height - logo_h) / 2
-    logo_drawn = False
 
     image_stream = None
     if quote_data.get('logo_file'):
@@ -481,15 +498,15 @@ def _draw_header(c, width, height, quote_data):
                 width=logo_w, height=logo_h,
                 preserveAspectRatio=True, mask='auto'
             )
-            logo_drawn = True
         except Exception as e:
             logger.warning(f"Logo draw failed: {e}")
-
-    if not logo_drawn and quote_data.get('seller_name'):
-        c.setFont("Helvetica-Bold", 15)
-        c.setFillColorRGB(0.2, 0.2, 0.2)
-        c.drawString(logo_x, header_y + (header_height / 2) - 0.1 * inch, quote_data['seller_name'])
-        c.setFillColorRGB(0, 0, 0)
+    else:
+        # Minimalist fallback if no logo is provided
+        if quote_data.get('seller_name'):
+            c.setFont("Helvetica-Bold", 15)
+            c.setFillColorRGB(0.2, 0.2, 0.2)
+            c.drawString(logo_x, header_y + (header_height / 2) - 0.1 * inch, quote_data['seller_name'])
+            c.setFillColorRGB(0, 0, 0)
 
 
 def _draw_client_info(c, y_pos, quote_data) -> float:
@@ -952,6 +969,7 @@ def page_free_generator():
                             "status": "enviada",
                             "quote_number": quote_number,
                             "views_count": 0,
+                            "internal_notes": ""
                         }).execute()
 
                         quote_id = res.data[0]['id']
@@ -1632,7 +1650,8 @@ if st.session_state.user:
 
             ---
             """)
-            st.image("tutorial_android.gif", use_container_width=True)
+            if os.path.exists("tutorial_android.gif"):
+                st.image("tutorial_android.gif", use_container_width=True)
 
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
             delete_session_storage()
