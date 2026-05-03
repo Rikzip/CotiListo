@@ -452,7 +452,8 @@ def _purge_expired_pdfs(user_id: str, quotes: list):
 # ⚙️ PDF GENERATION ENGINE
 # ==========================================
 def _draw_header(c, width, height, quote_data):
-    header_height = 1.4 * inch
+    # Augmentation de la hauteur de l'en-tête pour éviter tout débordement dynamique
+    header_height = 1.65 * inch
     header_y = height - header_height
     
     # Background and blue accent
@@ -462,32 +463,49 @@ def _draw_header(c, width, height, quote_data):
     c.rect(0, header_y, width, 0.03 * inch, fill=True, stroke=False)
 
     # ==========================================
-    # RIGHT SIDE: TEXT INFORMATION
+    # RIGHT SIDE: TEXT INFORMATION (DYNAMIC Y-AXIS)
     # ==========================================
-    # 1. Business Name (Top Right)
+    current_y = height - 0.35 * inch
+    
+    # 1. Business Name & Contact Info
     if quote_data.get('seller_name'):
         c.setFont("Helvetica-Bold", 12)
         c.setFillColorRGB(0.2, 0.2, 0.2)
-        c.drawRightString(width - 0.75 * inch, height - 0.35 * inch, quote_data['seller_name'])
+        c.drawRightString(width - 0.75 * inch, current_y, quote_data['seller_name'])
+        current_y -= 0.16 * inch
+
+    c.setFont("Helvetica", 9)
+    c.setFillColorRGB(0.4, 0.4, 0.4)
+    if quote_data.get('business_phone'):
+        c.drawRightString(width - 0.75 * inch, current_y, quote_data['business_phone'])
+        current_y -= 0.14 * inch
+    if quote_data.get('business_email'):
+        c.drawRightString(width - 0.75 * inch, current_y, quote_data['business_email'])
+        current_y -= 0.14 * inch
+
+    current_y -= 0.08 * inch # Spacing before Title
 
     # 2. Document Title
     c.setFillColorRGB(0.2, 0.2, 0.2)
     c.setFont("Helvetica-Bold", 20)
-    c.drawRightString(width - 0.75 * inch, height - 0.62 * inch, "Cotización")
+    c.drawRightString(width - 0.75 * inch, current_y, "Cotización")
+    current_y -= 0.22 * inch
 
     # 3. Quote Number
     if quote_data.get('quote_number'):
         c.setFont("Helvetica-Bold", 10)
         c.setFillColorRGB(0.09, 0.44, 0.76)
-        c.drawRightString(width - 0.75 * inch, height - 0.82 * inch, quote_data['quote_number'])
+        c.drawRightString(width - 0.75 * inch, current_y, quote_data['quote_number'])
+        current_y -= 0.18 * inch
 
     # 4. Dates
     c.setFont("Helvetica", 9)
     c.setFillColorRGB(0.5, 0.5, 0.5)
-    c.drawRightString(width - 0.75 * inch, height - 1.02 * inch, f"Fecha: {quote_data['date']}")
+    c.drawRightString(width - 0.75 * inch, current_y, f"Fecha: {quote_data['date']}")
+    current_y -= 0.14 * inch
 
     if quote_data.get('validity_date'):
-        c.drawRightString(width - 0.75 * inch, height - 1.18 * inch, f"Válida hasta: {quote_data['validity_date']}")
+        c.drawRightString(width - 0.75 * inch, current_y, f"Válida hasta: {quote_data['validity_date']}")
 
     # ==========================================
     # LEFT SIDE: LOGO
@@ -645,7 +663,7 @@ def _draw_totals(c, y_pos, quote_data) -> float:
         c.drawString(6.4 * inch, y_pos, f"{currency} {quote_data['advance_amount']:.2f}")
         y_pos -= 0.2 * inch
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(4.7 * inch, y_pos, "Saldo a Pagar:")
+        c.drawString(4.7 * inch, y_pos, "Saldo Pendiente:")
         c.drawString(6.4 * inch, y_pos, f"{currency} {quote_data['balance_due']:.2f}")
 
     return y_pos
@@ -697,7 +715,8 @@ def generate_pdf(quote_data: dict) -> bytes:
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
     _draw_header(c, width, height, quote_data)
-    y_pos = _draw_client_info(c, height - 1.7 * inch, quote_data)
+    # On descend un peu le texte d'infos client car le header est légèrement plus grand
+    y_pos = _draw_client_info(c, height - 1.95 * inch, quote_data)
     y_pos = _draw_items_table(c, y_pos, quote_data, width, height)
     _draw_totals(c, y_pos, quote_data)
     _draw_footer(c, width, quote_data)
@@ -920,7 +939,7 @@ def page_free_generator():
         advance_pct = st.slider("Porcentaje anticipo (%)", min_value=10, max_value=100, value=50, step=10) / 100.0
         advance_amount = grand_total * advance_pct
         balance_due = grand_total - advance_amount
-        st.info(f"**Anticipo:** {currency} {advance_amount:.2f} | **Saldo:** {currency} {balance_due:.2f}")
+        st.info(f"**Anticipo:** {currency} {advance_amount:.2f} | **Saldo Pendiente:** {currency} {balance_due:.2f}")
 
     default_val_days = int(profile.get("default_validity_days", 15))
     validity_days = col_val.number_input("Válida por (días)", min_value=1, value=default_val_days)
@@ -971,6 +990,8 @@ def page_free_generator():
                 "vehicle_desc": vehicle_desc,
                 "vehicle_plate": vehicle_plate,
                 "seller_name": seller_name,
+                "business_phone": profile.get("business_phone", ""),
+                "business_email": profile.get("business_email", ""),
                 "logo_file": uploaded_logo,
                 "logo_url": db_logo_url,
                 "bank_name": profile.get('bank_name'),
@@ -1407,6 +1428,13 @@ def page_profile():
             st.image(current_logo, width=150, caption="Logo Actual")
 
         st.divider()
+        
+        st.markdown("**📞 Contacto del Negocio (Aparecerá en el PDF)**")
+        col_tel, col_em = st.columns(2)
+        bus_phone = col_tel.text_input("Teléfono", value=profile.get('business_phone', ''), placeholder="+502 5555 1234")
+        bus_email = col_em.text_input("Email", value=profile.get('business_email', ''), placeholder="contacto@minegocio.com")
+
+        st.divider()
 
         st.markdown("**🏦 Información de Pago**")
         current_bank = profile.get('bank_name', '')
@@ -1461,6 +1489,8 @@ def page_profile():
                 supabase.table("profiles").upsert({
                     "id": st.session_state.user.id,
                     "business_name": name,
+                    "business_phone": bus_phone,
+                    "business_email": bus_email,
                     "default_currency": default_curr_sel,
                     "default_validity_days": default_val_days,
                     "require_vehicle_data": require_vehicle_data,
