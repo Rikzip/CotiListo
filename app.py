@@ -26,8 +26,7 @@ BASE_URL = os.environ.get("APP_BASE_URL", "https://app.cotilisto.com")
 PDF_LINK_EXPIRY_DAYS = 30
 PDF_SIGNED_URL_SECONDS = PDF_LINK_EXPIRY_DAYS * 86400
 IVA_RATE = 0.12
-COOKIE_NAME = "cotilisto_session"
-COOKIE_EXPIRY_DAYS = 30
+STORAGE_KEY = "cotilisto_session"
 
 st.set_page_config(
     page_title="CotiListo - Cotizaciones",
@@ -98,52 +97,55 @@ def get_supabase_client():
 supabase = get_supabase_client()
 
 # ==========================================
-# 🍪 PERSISTENT SESSION (COOKIE-BASED)
+# 💾 PERSISTENT SESSION (LOCAL STORAGE)
 # ==========================================
 try:
-    import extra_streamlit_components as stx
-    cookie_manager = stx.CookieManager(key="cotilisto_cookies")
-    COOKIES_AVAILABLE = True
-except Exception:
-    cookie_manager = None
-    COOKIES_AVAILABLE = False
+    from streamlit_local_storage import LocalStorage
+    local_storage = LocalStorage()
+    STORAGE_AVAILABLE = True
+except Exception as e:
+    logger.warning(f"LocalStorage module not found: {e}")
+    local_storage = None
+    STORAGE_AVAILABLE = False
 
 
-def save_session_cookie(access_token: str, refresh_token: str):
-    if not COOKIES_AVAILABLE or not cookie_manager:
+def save_session_storage(access_token: str, refresh_token: str):
+    if not STORAGE_AVAILABLE or not local_storage:
         return
     try:
         session_data = json.dumps({
             "access_token": access_token,
             "refresh_token": refresh_token,
         })
-        expiry = datetime.now() + timedelta(days=COOKIE_EXPIRY_DAYS)
-        cookie_manager.set(COOKIE_NAME, session_data, expires_at=expiry)
+        local_storage.setItem(STORAGE_KEY, session_data)
     except Exception as e:
-        logger.warning(f"Cookie save failed: {e}")
+        logger.warning(f"Storage save failed: {e}")
 
 
-def delete_session_cookie():
-    if not COOKIES_AVAILABLE or not cookie_manager:
+def delete_session_storage():
+    if not STORAGE_AVAILABLE or not local_storage:
         return
     try:
-        cookie_manager.delete(COOKIE_NAME)
+        local_storage.deleteAll()
     except Exception as e:
-        logger.warning(f"Cookie delete failed: {e}")
+        logger.warning(f"Storage delete failed: {e}")
 
 
-def restore_session_from_cookie() -> bool:
-    if not COOKIES_AVAILABLE or not cookie_manager or not supabase:
+def restore_session_from_storage() -> bool:
+    if not STORAGE_AVAILABLE or not local_storage or not supabase:
         return False
     try:
-        # On utilise get_all() qui est beaucoup plus fiable au chargement initial
-        cookies = cookie_manager.get_all()
-        raw = cookies.get(COOKIE_NAME)
-        
+        raw = local_storage.getItem(STORAGE_KEY)
         if not raw:
             return False
-        
-        data = json.loads(raw)
+
+        if isinstance(raw, dict):
+            data = raw
+        elif isinstance(raw, str):
+            data = json.loads(raw)
+        else:
+            return False
+
         access_token = data.get("access_token", "")
         refresh_token = data.get("refresh_token", "")
         if not access_token or not refresh_token:
@@ -154,7 +156,7 @@ def restore_session_from_cookie() -> bool:
             if result and result.user:
                 st.session_state.user = result.user
                 if result.session:
-                    save_session_cookie(result.session.access_token, result.session.refresh_token)
+                    save_session_storage(result.session.access_token, result.session.refresh_token)
                 return True
         except Exception:
             try:
@@ -162,14 +164,14 @@ def restore_session_from_cookie() -> bool:
                 if result and result.user:
                     st.session_state.user = result.user
                     if result.session:
-                        save_session_cookie(result.session.access_token, result.session.refresh_token)
+                        save_session_storage(result.session.access_token, result.session.refresh_token)
                     return True
             except Exception as e:
                 logger.warning(f"Session refresh failed: {e}")
-                delete_session_cookie()
+                delete_session_storage()
                 return False
     except Exception as e:
-        logger.warning(f"Cookie restore failed: {e}")
+        logger.warning(f"Storage restore failed: {e}")
         return False
 
 # ==========================================
@@ -310,7 +312,7 @@ if "boot_rerun" not in st.session_state:
 
 if not st.session_state.user and not st.session_state.session_restored:
     st.session_state.session_restored = True
-    if restore_session_from_cookie():
+    if restore_session_from_storage():
         st.session_state.show_welcome = True
         st.rerun()
 
@@ -813,7 +815,7 @@ def page_free_generator():
     item_desc = st.text_input("Descripción", value=auto_desc)
     col3, col4 = st.columns(2)
     item_qty = col3.number_input("Cant.", min_value=1, value=1)
-    item_price = col4.number_input("Precio (HT)", min_value=0.0, value=auto_price)
+    item_price = col4.number_input("Precio", min_value=0.0, value=auto_price)
 
     if st.button("➕ Agregar"):
         if item_desc and item_price > 0:
@@ -1495,7 +1497,7 @@ def process_login():
         })
         st.session_state.user = res.user
         if res.session:
-            save_session_cookie(res.session.access_token, res.session.refresh_token)
+            save_session_storage(res.session.access_token, res.session.refresh_token)
         fetch_user_data(force=True)
         st.session_state.show_welcome = True
         st.session_state.login_error = None
@@ -1633,7 +1635,7 @@ if st.session_state.user:
             st.image("tutorial_android.gif", use_container_width=True)
 
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
-            delete_session_cookie()
+            delete_session_storage()
             supabase.auth.sign_out()
             st.session_state.user = None
             st.session_state.user_profile = {}

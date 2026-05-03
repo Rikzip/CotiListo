@@ -1,3 +1,5 @@
 streamlit
 reportlab
 supabase
+Pillow
+streamlit-local-storage
