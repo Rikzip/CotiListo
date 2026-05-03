@@ -136,9 +136,13 @@ def restore_session_from_cookie() -> bool:
     if not COOKIES_AVAILABLE or not cookie_manager or not supabase:
         return False
     try:
-        raw = cookie_manager.get(COOKIE_NAME)
+        # On utilise get_all() qui est beaucoup plus fiable au chargement initial
+        cookies = cookie_manager.get_all()
+        raw = cookies.get(COOKIE_NAME)
+        
         if not raw:
             return False
+        
         data = json.loads(raw)
         access_token = data.get("access_token", "")
         refresh_token = data.get("refresh_token", "")
@@ -227,7 +231,6 @@ if "doc" in query_params:
                 created_date = datetime.fromisoformat(quote['created_at'].replace("Z", "+00:00"))
                 days_old = (datetime.now(timezone.utc) - created_date).days
 
-                # Increment view counter silently
                 try:
                     supabase.table("quotes").update(
                         {"views_count": (quote.get("views_count") or 0) + 1}
@@ -780,11 +783,12 @@ def page_free_generator():
             vehicle_desc = col_v1.text_input("Marca, Modelo", placeholder="Ej: Toyota Hilux")
             vehicle_plate = col_v2.text_input("Placas", placeholder="Ej: P-123ABC")
     else:
-        st.divider()
-        st.markdown("### 🚗 Datos del Vehículo (Opcional)")
-        col_v1, col_v2 = st.columns(2)
-        vehicle_desc = col_v1.text_input("Marca, Modelo", placeholder="Ej: Toyota Hilux")
-        vehicle_plate = col_v2.text_input("Placas", placeholder="Ej: P-123ABC")
+        if profile.get('require_vehicle_data', False):
+            st.divider()
+            st.markdown("### 🚗 Datos del Vehículo")
+            col_v1, col_v2 = st.columns(2)
+            vehicle_desc = col_v1.text_input("Marca, Modelo", placeholder="Ej: Toyota Hilux")
+            vehicle_plate = col_v2.text_input("Placas", placeholder="Ej: P-123ABC")
 
     st.divider()
 
@@ -1292,10 +1296,12 @@ def page_analytics():
         st.metric(f"🏆 Ingresos Totales", f"{currency} {total_ganado:,.2f}")
         
     col1, col2 = st.columns(2)
-    with st.container(border=True):
-        col1.metric("✅ Tratos Ganados", st.session_state.quotes_won_count)
-    with st.container(border=True):
-        col2.metric("📝 Cotizaciones este mes", st.session_state.quotes_this_month)
+    with col1:
+        with st.container(border=True):
+            st.metric("✅ Tratos Ganados", st.session_state.quotes_won_count)
+    with col2:
+        with st.container(border=True):
+            st.metric("📝 Cotizaciones este mes", st.session_state.quotes_this_month)
         
     if total_ganado == 0:
         st.info("💡 Consejo: Cuando un cliente acepte tu cotización, ve a tu **Historial** y márcala como 'Ganada' para ver tus ingresos aquí.")
@@ -1355,6 +1361,9 @@ def page_profile():
         st.markdown("**⚙️ Ajustes por Defecto**")
         default_val_days = st.number_input("Días de validez por defecto para nuevas cotizaciones", 
                                            min_value=1, value=int(profile.get('default_validity_days', 15)))
+        
+        require_vehicle_data = st.checkbox("Habilitar campos de Vehículo (Mecánica / Taller)", 
+                                           value=profile.get('require_vehicle_data', False))
 
         st.markdown("**📜 Condiciones**")
         st.info(
@@ -1393,6 +1402,7 @@ def page_profile():
                     "business_name": name,
                     "default_currency": default_curr_sel,
                     "default_validity_days": default_val_days,
+                    "require_vehicle_data": require_vehicle_data,
                     "logo_url": final_logo_url,
                     "bank_name": bank_name,
                     "account_type": acc_type,
