@@ -110,7 +110,6 @@ except Exception:
 
 
 def save_session_cookie(access_token: str, refresh_token: str):
-    """Save Supabase tokens to a persistent cookie."""
     if not COOKIES_AVAILABLE or not cookie_manager:
         return
     try:
@@ -125,7 +124,6 @@ def save_session_cookie(access_token: str, refresh_token: str):
 
 
 def delete_session_cookie():
-    """Delete the persistent session cookie."""
     if not COOKIES_AVAILABLE or not cookie_manager:
         return
     try:
@@ -135,7 +133,6 @@ def delete_session_cookie():
 
 
 def restore_session_from_cookie() -> bool:
-    """Try to restore Supabase session from cookie. Returns True if successful."""
     if not COOKIES_AVAILABLE or not cookie_manager or not supabase:
         return False
     try:
@@ -148,17 +145,14 @@ def restore_session_from_cookie() -> bool:
         if not access_token or not refresh_token:
             return False
 
-        # Try to set session — if access_token expired, refresh it
         try:
             result = supabase.auth.set_session(access_token, refresh_token)
             if result and result.user:
                 st.session_state.user = result.user
-                # Refresh cookie with potentially new tokens
                 if result.session:
                     save_session_cookie(result.session.access_token, result.session.refresh_token)
                 return True
         except Exception:
-            # access_token expired — try refresh
             try:
                 result = supabase.auth.refresh_session(refresh_token)
                 if result and result.user:
@@ -307,10 +301,15 @@ for k, v in _defaults.items():
 # ==========================================
 # 🍪 AUTO-RESTORE SESSION ON APP LOAD
 # ==========================================
+if "boot_rerun" not in st.session_state:
+    st.session_state.boot_rerun = True
+    st.rerun()
+
 if not st.session_state.user and not st.session_state.session_restored:
     st.session_state.session_restored = True
     if restore_session_from_cookie():
         st.session_state.show_welcome = True
+        st.rerun()
 
 # ==========================================
 # ⚙️ HELPERS
@@ -339,7 +338,6 @@ def fetch_user_data(force: bool = False):
         except Exception as e:
             logger.error(f"Clients fetch error: {e}")
 
-        # Monthly quote count
         try:
             now = datetime.now(timezone.utc)
             first_day = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -349,7 +347,6 @@ def fetch_user_data(force: bool = False):
         except Exception as e:
             logger.warning(f"Quote count error: {e}")
 
-        # Total quotes count (for quote_number generation)
         try:
             res_total = supabase.table("quotes").select("id", count="exact") \
                 .eq("user_id", uid).execute()
@@ -357,7 +354,6 @@ def fetch_user_data(force: bool = False):
         except Exception as e:
             logger.warning(f"Total quote count error: {e}")
 
-        # All-time won revenue
         try:
             res_won = supabase.table("quotes").select("total_amount") \
                 .eq("user_id", uid).eq("status", "ganada").execute()
@@ -372,7 +368,6 @@ def fetch_user_data(force: bool = False):
 
 
 def get_quote_number(user_id: str, year: int, total_count: int) -> str:
-    """Generate sequential quote number per user: COT-2026-0042"""
     next_num = total_count + 1
     return f"COT-{year}-{next_num:04d}"
 
@@ -444,7 +439,6 @@ def _draw_header(c, width, height, quote_data):
     c.setFont("Helvetica-Bold", 20)
     c.drawRightString(width - 0.75 * inch, height - 0.58 * inch, "Cotización")
 
-    # Quote number
     if quote_data.get('quote_number'):
         c.setFont("Helvetica", 9)
         c.setFillColorRGB(0.09, 0.44, 0.76)
@@ -454,7 +448,6 @@ def _draw_header(c, width, height, quote_data):
     c.setFillColorRGB(0.5, 0.5, 0.5)
     c.drawRightString(width - 0.75 * inch, height - 0.92 * inch, f"Fecha: {quote_data['date']}")
 
-    # Validity date
     if quote_data.get('validity_date'):
         c.drawRightString(width - 0.75 * inch, height - 1.06 * inch, f"Válida hasta: {quote_data['validity_date']}")
 
@@ -577,12 +570,10 @@ def _draw_totals(c, y_pos, quote_data) -> float:
 
     c.setFont("Helvetica", 10)
 
-    # Subtotal
     c.drawString(4.2 * inch, y_pos, "Subtotal:")
     c.drawString(5.5 * inch, y_pos, f"{currency} {subtotal:.2f}")
     y_pos -= 0.22 * inch
 
-    # Discount
     if discount_amount > 0:
         c.setFillColorRGB(0.8, 0.1, 0.1)
         c.drawString(4.2 * inch, y_pos, "Descuento:")
@@ -590,13 +581,11 @@ def _draw_totals(c, y_pos, quote_data) -> float:
         c.setFillColorRGB(0, 0, 0)
         y_pos -= 0.22 * inch
 
-    # IVA
     if iva_amount > 0:
         c.drawString(4.2 * inch, y_pos, f"IVA ({int(IVA_RATE * 100)}%):")
         c.drawString(5.5 * inch, y_pos, f"{currency} {iva_amount:.2f}")
         y_pos -= 0.22 * inch
 
-    # Total
     y_pos -= 0.05 * inch
     c.setFont("Helvetica-Bold", 11)
     c.setFillColorRGB(0.09, 0.44, 0.76)
@@ -605,7 +594,6 @@ def _draw_totals(c, y_pos, quote_data) -> float:
     c.setFillColorRGB(0, 0, 0)
     y_pos -= 0.28 * inch
 
-    # Advance
     if quote_data.get('advance_amount', 0) > 0:
         c.setFont("Helvetica", 10)
         c.drawString(4.2 * inch, y_pos, "Anticipo Requerido:")
@@ -712,25 +700,9 @@ def page_free_generator():
             with col_cta2:
                 st.page_link(page_log, label="🔑 Ya tengo cuenta")
 
-    # --- Currency, template & metrics ---
     if st.session_state.user:
         default_currency = profile.get("default_currency", "Q")
-        col1, col2 = st.columns([1, 2])
-        currency = col1.radio("Moneda:", ["Q", "$"], index=0 if default_currency == "Q" else 1, horizontal=True)
-
-        # Metrics
-        total_ganado = st.session_state.total_ganado
-        currency_symbol = "Q" if "Q" in currency else "$"
-        col2.metric("📊 Este mes", f"{st.session_state.quotes_this_month} cotizaciones")
-
-        with st.container(border=True):
-            m1, m2 = st.columns(2)
-            m1.metric("🏆 Total ganado", f"{currency_symbol} {total_ganado:,.0f}")
-            m2.metric("✅ Contratos", f"{st.session_state.quotes_won_count}")
-            if total_ganado == 0 and st.session_state.quotes_this_month > 0:
-                st.caption("¿Cerraste un trato? Márcalo como ganado en tu Historial →")
-                st.page_link(page_hist, label="Ir al Historial", icon="🗂️")
-
+        currency = st.radio("Moneda de esta cotización:", ["Q", "$"], index=0 if default_currency == "Q" else 1, horizontal=True)
         template = "Personalizado"
         st.info(f"✨ Modo personalizado: **{profile.get('business_name', 'tu negocio')}**")
     else:
@@ -740,7 +712,6 @@ def page_free_generator():
 
     st.divider()
 
-    # --- Seller info ---
     st.markdown("### 🏢 Tu Negocio (Vendedor)")
     seller_name = st.text_input(
         "Tu Nombre o el de tu Negocio",
@@ -759,7 +730,6 @@ def page_free_generator():
 
     st.divider()
 
-    # --- Client info ---
     st.markdown("### 👤 Datos del Cliente")
     c_name = ""
     c_phone = ""
@@ -768,10 +738,10 @@ def page_free_generator():
     phone_prefix = "502"
 
     if st.session_state.user and st.session_state.clients:
-        client_options = ["➕ Crear nuevo..."] + [c['name'] for c in st.session_state.clients]
+        client_options = ["➕ Crear nuevo (ingresa datos abajo)"] + [c['name'] for c in st.session_state.clients]
         sel_c = st.selectbox("Buscar cliente:", client_options)
 
-        if sel_c == "➕ Crear nuevo...":
+        if sel_c == "➕ Crear nuevo (ingresa datos abajo)":
             c_name = st.text_input("Nombre Cliente")
             col_cc, col_phone_input = st.columns([1, 2])
             selected_country = col_cc.selectbox("País", list(COUNTRY_CODES.keys()))
@@ -801,7 +771,6 @@ def page_free_generator():
         c_email = col_email_input.text_input("Email (Opcional)", placeholder="ejemplo@correo.com")
         c_nit = col_nit_input.text_input("NIT / ID Fiscal", placeholder="Ej: 1234567-8")
 
-    # --- Vehicle fields ---
     vehicle_desc, vehicle_plate = "", ""
     if not st.session_state.user:
         if template == "Taller Mecánico / Motos":
@@ -819,7 +788,6 @@ def page_free_generator():
 
     st.divider()
 
-    # --- Items ---
     st.markdown("### 🛒 Productos o Servicios")
     catalog_options = ["Escribir manualmente..."]
     custom_catalog_map = {}
@@ -868,7 +836,6 @@ def page_free_generator():
 
     st.divider()
 
-    # --- Discount, IVA, Totals ---
     st.markdown("### 💰 Descuentos e Impuestos")
     col_disc1, col_disc2 = st.columns(2)
     discount_type = col_disc1.radio("Tipo de descuento:", ["Sin descuento", "Monto fijo", "Porcentaje (%)"], horizontal=False)
@@ -894,7 +861,6 @@ def page_free_generator():
 
     st.divider()
 
-    # --- Advance & Validity ---
     col_adv, col_val = st.columns(2)
     require_advance = col_adv.checkbox("Requerir Anticipo")
     advance_amount, balance_due = 0.0, grand_total
@@ -904,7 +870,8 @@ def page_free_generator():
         balance_due = grand_total - advance_amount
         st.info(f"**Anticipo:** {currency} {advance_amount:.2f} | **Saldo:** {currency} {balance_due:.2f}")
 
-    validity_days = col_val.number_input("Válida por (días)", min_value=1, value=15)
+    default_val_days = int(profile.get("default_validity_days", 15))
+    validity_days = col_val.number_input("Válida por (días)", min_value=1, value=default_val_days)
     validity_date = (datetime.now() + timedelta(days=int(validity_days))).strftime("%d/%m/%Y")
 
     st.divider()
@@ -923,7 +890,6 @@ def page_free_generator():
             display_phone = f"+{phone_prefix} {clean_phone}" if clean_phone and phone_prefix else c_phone
             currency_symbol = "Q" if "Q" in currency else "$"
 
-            # Generate quote number
             now = datetime.now()
             quote_number = ""
             if st.session_state.user:
@@ -1098,7 +1064,6 @@ def page_history():
 
     _purge_expired_pdfs(st.session_state.user.id, quotes)
 
-    # --- Filters ---
     col_search, col_filter = st.columns([2, 1])
     search = col_search.text_input("🔍 Buscar cliente...", placeholder="Nombre del cliente")
     status_filter = col_filter.selectbox("Estado:", ["Todas", "Enviadas", "Ganadas"])
@@ -1129,7 +1094,6 @@ def page_history():
         days_old = (datetime.now(timezone.utc) - created_date).days
         smart_url = f"{BASE_URL}/?doc={doc_id}"
 
-        # Dynamic icon
         if status == "ganada":
             status_icon = "🏆"
         elif days_old > PDF_LINK_EXPIRY_DAYS:
@@ -1142,7 +1106,6 @@ def page_history():
         expander_label = f"{status_icon}{num_label} {client_name} — {currency} {float(total_amount):.2f} (Hace {days_old} días){views_label}"
 
         with st.expander(expander_label):
-            # Internal notes
             new_notes = st.text_area(
                 "📝 Notas internas (privadas)",
                 value=internal_notes,
@@ -1184,7 +1147,6 @@ def page_history():
                         logger.error(f"Regen error: {e}")
                         st.error(f"Error al regenerar: {e}")
             else:
-                # Build URLs
                 client_phone = q_data.get("display_phone", "")
                 client_email = q_data.get("client_email", "")
                 clean_phone = ''.join(filter(str.isdigit, client_phone))
@@ -1197,7 +1159,6 @@ def page_history():
                     f"Hola {client_name},\n\nAdjunto el enlace a tu cotización segura:\n{smart_url}\n\nSaludos cordiales,".encode('utf-8')
                 )
 
-                # Row 1: Ver, WhatsApp, Email
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.link_button("👁️ Ver", smart_url, use_container_width=True)
@@ -1209,7 +1170,6 @@ def page_history():
                 with col3:
                     st.link_button("📧 Email", f"mailto:{client_email}?subject={subject}&body={body}", use_container_width=True)
 
-                # Row 2: Seguimiento, Copiar enlace, Duplicar
                 col4, col5, col6 = st.columns(3)
                 with col4:
                     if wa_followup_url:
@@ -1217,7 +1177,6 @@ def page_history():
                     else:
                         st.button("🔔 Seguimiento", disabled=True, use_container_width=True)
                 with col5:
-                    # Copy link button via JS
                     components.html(f"""
                         <button onclick="navigator.clipboard.writeText('{smart_url}').then(() => alert('¡Enlace copiado!'))"
                             style="width:100%;padding:6px;background:#f0f2f6;border:1px solid #d0d3da;
@@ -1232,7 +1191,6 @@ def page_history():
                         st.toast("🛒 Carrito copiado. Por favor, ingresa los datos del nuevo cliente.")
                         st.switch_page(page_gen)
 
-                # Row 3: Ganada, Eliminar
                 col7, col8 = st.columns(2)
                 with col7:
                     if status != "ganada":
@@ -1316,6 +1274,34 @@ def page_clients():
 
 
 # ==========================================
+# 📊 PAGE: ANÁLISIS
+# ==========================================
+def page_analytics():
+    st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
+    st.title("📊 Análisis de Ventas")
+    
+    if not st.session_state.user:
+        st.warning("Inicia sesión para ver tus estadísticas.")
+        return
+
+    fetch_user_data()
+    total_ganado = st.session_state.total_ganado
+    currency = st.session_state.user_profile.get("default_currency", "Q")
+
+    with st.container(border=True):
+        st.metric(f"🏆 Ingresos Totales", f"{currency} {total_ganado:,.2f}")
+        
+    col1, col2 = st.columns(2)
+    with st.container(border=True):
+        col1.metric("✅ Tratos Ganados", st.session_state.quotes_won_count)
+    with st.container(border=True):
+        col2.metric("📝 Cotizaciones este mes", st.session_state.quotes_this_month)
+        
+    if total_ganado == 0:
+        st.info("💡 Consejo: Cuando un cliente acepte tu cotización, ve a tu **Historial** y márcala como 'Ganada' para ver tus ingresos aquí.")
+
+
+# ==========================================
 # ⚙️ PAGE: PERFIL
 # ==========================================
 def page_profile():
@@ -1339,7 +1325,6 @@ def page_profile():
     with st.expander("🏢 Negocio, Logo y Banco", expanded=True):
         name = st.text_input("Nombre del Negocio", value=profile.get('business_name', ''))
 
-        # Default currency
         default_curr = profile.get("default_currency", "Q")
         default_curr_sel = st.radio("Moneda por defecto:", ["Q", "$"],
                                     index=0 if default_curr == "Q" else 1, horizontal=True)
@@ -1365,10 +1350,16 @@ def page_profile():
         acc_num = st.text_input("Número de Cuenta", value=profile.get('account_number', ''))
         acc_name = st.text_input("Nombre en la Cuenta", value=profile.get('account_name', ''))
 
+        st.divider()
+
+        st.markdown("**⚙️ Ajustes por Defecto**")
+        default_val_days = st.number_input("Días de validez por defecto para nuevas cotizaciones", 
+                                           min_value=1, value=int(profile.get('default_validity_days', 15)))
+
         st.markdown("**📜 Condiciones**")
         st.info(
             "💡 **Ejemplos rápidos:**\n"
-            "**Servicios:** *Cotización válida por 15 días. Anticipo del 50% no reembolsable para agendar.*\n"
+            "**Servicios:** *Cotización válida por el tiempo indicado arriba. Anticipo del 50% no reembolsable para agendar.*\n"
             "**Productos:** *Precios sujetos a cambios. Garantía de 30 días contra defectos de fábrica.*"
         )
         terms = st.text_area("Condiciones", value=profile.get('terms_conditions', ''))
@@ -1401,6 +1392,7 @@ def page_profile():
                     "id": st.session_state.user.id,
                     "business_name": name,
                     "default_currency": default_curr_sel,
+                    "default_validity_days": default_val_days,
                     "logo_url": final_logo_url,
                     "bank_name": bank_name,
                     "account_type": acc_type,
@@ -1492,7 +1484,6 @@ def process_login():
             "password": st.session_state.login_pw,
         })
         st.session_state.user = res.user
-        # Save persistent session cookie
         if res.session:
             save_session_cookie(res.session.access_token, res.session.refresh_token)
         fetch_user_data(force=True)
@@ -1606,6 +1597,7 @@ def page_login():
 page_gen = st.Page(page_free_generator, title="Generador", icon="📝")
 page_hist = st.Page(page_history, title="Historial", icon="🗂️")
 page_crm = st.Page(page_clients, title="Mis Clientes", icon="👥")
+page_ana = st.Page(page_analytics, title="Análisis", icon="📊")
 page_prof = st.Page(page_profile, title="Mi Perfil", icon="⚙️")
 page_sup = st.Page(page_support, title="Soporte", icon="💬")
 page_log = st.Page(page_login, title="Entrar / Registro", icon="🔐")
@@ -1645,7 +1637,7 @@ if st.session_state.user:
             st.session_state.last_client_email = ""
             st.session_state.session_restored = False
             st.rerun()
-    pg = st.navigation([page_gen, page_hist, page_crm, page_prof, page_sup])
+    pg = st.navigation([page_gen, page_hist, page_crm, page_ana, page_prof, page_sup])
 else:
     pg = st.navigation([page_gen, page_sup, page_log])
 
