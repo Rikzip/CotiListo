@@ -17,7 +17,7 @@ import logging
 import streamlit.components.v1 as components
 
 # ==========================================
-# 📱 GLOBAL CONFIGURATION
+# 📱 GLOBAL CONFIGURATION & TIMEZONE
 # ==========================================
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -27,6 +27,9 @@ PDF_LINK_EXPIRY_DAYS = 30
 PDF_SIGNED_URL_SECONDS = PDF_LINK_EXPIRY_DAYS * 86400
 IVA_RATE = 0.12
 STORAGE_KEY = "cotilisto_session"
+
+# Guatemala Timezone (UTC-6)
+GT_TZ = timezone(timedelta(hours=-6))
 
 st.set_page_config(
     page_title="CotiListo - Cotizaciones",
@@ -176,32 +179,52 @@ def restore_session_from_storage() -> bool:
         return False
 
 # ==========================================
-# 📋 CONSTANTS & TEMPLATES
+# 🧠 SESSION STATE INITIALIZATION
 # ==========================================
-TEMPLATES = {
-    "General": ["Producto básico", "Producto premium", "Servicio general", "Envío / Delivery", "Descuento especial"],
-    "Taller Mecánico / Motos": ["Diagnóstico general", "Servicio menor", "Servicio mayor", "Cambio de aceite y filtro", "Cambio de pastillas de freno", "Alineación y balanceo", "Revisión del sistema eléctrico", "Reparación de motor", "Limpieza de inyectores"],
-    "Odontología / Dentista": ["Consulta de evaluación", "Limpieza dental (Profilaxis)", "Relleno blanco (Resina)", "Extracción simple", "Extracción de cordal", "Blanqueamiento dental", "Tratamiento de canales", "Radiografía panorámica"],
-    "Clínica Médica": ["Consulta médica general", "Consulta con especialista", "Examen de laboratorio clínico", "Electrocardiograma", "Ultrasonido", "Certificado médico", "Aplicación de medicamento"],
-    "Construcción / Carpintería": ["Mano de obra (por día)", "Mano de obra (por obra)", "Instalación (m2)", "Fabricación de mueble a medida", "Pintura interior/exterior (m2)", "Reparación estructural", "Supervisión de obra", "Materiales varios"],
-    "Freelance / Servicios": ["Consultoría (por hora)", "Consultoría (por proyecto)", "Desarrollo de página web", "Diseño de logotipo", "Gestión de redes sociales (Mensual)", "Auditoría / Análisis", "Traducción de documentos"],
-    "Eventos / Catering": ["Menú por persona (Básico)", "Menú por persona (Premium)", "Alquiler de salón", "Alquiler de sillas y mesas", "Servicio de meseros", "Decoración floral", "Pastel personalizado", "Equipo de sonido"],
+_defaults = {
+    'cart': [],
+    'pdf_ready': False,
+    'pdf_bytes': None,
+    'wa_url': "",
+    'smart_url': "",
+    'last_client_name': "",
+    'last_client_email': "",
+    'last_quote_number': "",
+    'user': None,
+    'user_profile': {},
+    'clients': [],
+    'quotes_this_month': 0,
+    'total_ganado': 0.0,
+    'quotes_won_count': 0,
+    'total_quotes_count': 0,
+    'show_welcome': False,
+    'login_error': None,
+    'reg_msg': None,
+    'reg_error': None,
+    'recovery_code_sent': False,
+    'recovery_email': "",
+    'password_changed_success': False,
+    'user_data_loaded': False,
+    'profile_saved': False,
+    'catalog_saved': False,
+    'session_restored': False,
 }
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-COUNTRY_CODES = {
-    "🇬🇹 +502": "502", "🇸🇻 +503": "503", "🇭🇳 +504": "504",
-    "🇲🇽 +52": "52", "🇺🇸 +1": "1", "Otra": "",
-}
+# ==========================================
+# 🍪 AUTO-RESTORE SESSION ON APP LOAD
+# ==========================================
+if "boot_rerun" not in st.session_state:
+    st.session_state.boot_rerun = True
+    st.rerun()
 
-GUATEMALA_BANKS = [
-    "Banco Industrial (BI)", "Banco de Desarrollo Rural (Banrural)", "Banco G&T Continental",
-    "Banco Agromercantil de Guatemala (BAM)", "Banco de América Central (BAC Credomatic)",
-    "Banco de los Trabajadores (Bantrab)", "El Crédito Hipotecario Nacional (CHN)",
-    "Banco Promerica", "Banco Ficohsa", "Banco Inmobiliario", "Banco Internacional",
-    "Banco de Antigua", "Banco Azteca", "Banco Cuscatlán", "Vivibanco", "Banco INV",
-    "Banco Credicorp", "Banco Nexa", "Banco MultiMoney", "Citibank",
-    "Cooperativa Micoope", "Otra...",
-]
+if not st.session_state.user and not st.session_state.session_restored:
+    st.session_state.session_restored = True
+    if restore_session_from_storage():
+        st.session_state.show_welcome = True
+        st.rerun()
 
 # ==========================================
 # 🌍 PUBLIC ROUTER: THE VIEWER PAGE
@@ -213,7 +236,7 @@ if "doc" in query_params:
     st.empty()
 
     if st.session_state.get('user'):
-        if st.button("⬅️ Volver a la aplicación", use_container_width=True):
+        if st.button("⬅️ Volver a mi panel", use_container_width=True):
             st.query_params.clear()
             st.rerun()
 
@@ -239,12 +262,15 @@ if "doc" in query_params:
                 created_date = datetime.fromisoformat(quote['created_at'].replace("Z", "+00:00"))
                 days_old = (datetime.now(timezone.utc) - created_date).days
 
-                try:
-                    supabase.table("quotes").update(
-                        {"views_count": (quote.get("views_count") or 0) + 1}
-                    ).eq("id", doc_id).execute()
-                except Exception:
-                    pass
+                is_owner = st.session_state.user and st.session_state.user.id == quote['user_id']
+
+                if not is_owner:
+                    try:
+                        supabase.table("quotes").update(
+                            {"views_count": (quote.get("views_count") or 0) + 1}
+                        ).eq("id", doc_id).execute()
+                    except Exception:
+                        pass
 
                 q_num = quote.get("quote_number", "")
                 title_suffix = f" — {q_num}" if q_num else ""
@@ -288,55 +314,38 @@ if "doc" in query_params:
 
     st.stop()
 
+
 # ==========================================
-# 🧠 SESSION STATE INITIALIZATION
+# 📋 CONSTANTS & TEMPLATES
 # ==========================================
-_defaults = {
-    'cart': [],
-    'pdf_ready': False,
-    'pdf_bytes': None,
-    'wa_url': "",
-    'smart_url': "",
-    'last_client_name': "",
-    'last_client_email': "",
-    'user': None,
-    'user_profile': {},
-    'clients': [],
-    'quotes_this_month': 0,
-    'total_ganado': 0.0,
-    'quotes_won_count': 0,
-    'total_quotes_count': 0,
-    'show_welcome': False,
-    'login_error': None,
-    'reg_msg': None,
-    'reg_error': None,
-    'recovery_code_sent': False,
-    'recovery_email': "",
-    'password_changed_success': False,
-    'user_data_loaded': False,
-    'profile_saved': False,
-    'catalog_saved': False,
-    'session_restored': False,
+TEMPLATES = {
+    "General": ["Producto básico", "Producto premium", "Servicio general", "Envío / Delivery", "Descuento especial"],
+    "Taller Mecánico / Motos": ["Diagnóstico general", "Servicio menor", "Servicio mayor", "Cambio de aceite y filtro", "Cambio de pastillas de freno", "Alineación y balanceo", "Revisión del sistema eléctrico", "Reparación de motor", "Limpieza de inyectores"],
+    "Odontología / Dentista": ["Consulta de evaluación", "Limpieza dental (Profilaxis)", "Relleno blanco (Resina)", "Extracción simple", "Extracción de cordal", "Blanqueamiento dental", "Tratamiento de canales", "Radiografía panorámica"],
+    "Clínica Médica": ["Consulta médica general", "Consulta con specialist", "Examen de laboratorio clínico", "Electrocardiograma", "Ultrasonido", "Certificado médico", "Aplicación de medicamento"],
+    "Construcción / Carpintería": ["Mano de obra (por día)", "Mano de obra (por obra)", "Instalación (m2)", "Fabricación de mueble a medida", "Pintura interior/exterior (m2)", "Reparación estructural", "Supervisión de obra", "Materiales varios"],
+    "Freelance / Servicios": ["Consultoría (por hora)", "Consultoría (por proyecto)", "Desarrollo de página web", "Diseño de logotipo", "Gestión de redes sociales (Mensual)", "Auditoría / Análisis", "Traducción de documentos"],
+    "Eventos / Catering": ["Menú por persona (Básico)", "Menú por persona (Premium)", "Alquiler de salón", "Alquiler de sillas y mesas", "Servicio de meseros", "Decoración floral", "Pastel personalizado", "Equipo de sonido"],
 }
-for k, v in _defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+
+COUNTRY_CODES = {
+    "🇬🇹 +502": "502", "🇸🇻 +503": "503", "🇭🇳 +504": "504",
+    "🇲🇽 +52": "52", "🇺🇸 +1": "1", "Otra": "",
+}
+
+GUATEMALA_BANKS = [
+    "Banco Industrial (BI)", "Banco de Desarrollo Rural (Banrural)", "Banco G&T Continental",
+    "Banco Agromercantil de Guatemala (BAM)", "Banco de América Central (BAC Credomatic)",
+    "Banco de los Trabajadores (Bantrab)", "El Crédito Hipotecario Nacional (CHN)",
+    "Banco Promerica", "Banco Ficohsa", "Banco Inmobiliario", "Banco Internacional",
+    "Banco de Antigua", "Banco Azteca", "Banco Cuscatlán", "Vivibanco", "Banco INV",
+    "Banco Credicorp", "Banco Nexa", "Banco MultiMoney", "Citibank",
+    "Cooperativa Micoope", "Otra...",
+]
+
 
 # ==========================================
-# 🍪 AUTO-RESTORE SESSION ON APP LOAD
-# ==========================================
-if "boot_rerun" not in st.session_state:
-    st.session_state.boot_rerun = True
-    st.rerun()
-
-if not st.session_state.user and not st.session_state.session_restored:
-    st.session_state.session_restored = True
-    if restore_session_from_storage():
-        st.session_state.show_welcome = True
-        st.rerun()
-
-# ==========================================
-# ⚙️ HELPERS
+# ⚙️ HELPERS 
 # ==========================================
 @st.cache_data
 def get_base64_image(image_path: str) -> str:
@@ -420,7 +429,7 @@ def process_image_for_pdf(image_input_stream) -> io.BytesIO:
 
 
 def upload_pdf_to_storage(pdf_bytes: bytes, user_id: str) -> tuple[str, str]:
-    file_name = f"{user_id}/cotizacion_{int(datetime.now().timestamp())}.pdf"
+    file_name = f"{user_id}/cotizacion_{int(datetime.now(GT_TZ).timestamp())}.pdf"
     supabase.storage.from_("quotations").upload(
         file=pdf_bytes, path=file_name,
         file_options={"content-type": "application/pdf", "upsert": "true"}
@@ -452,22 +461,16 @@ def _purge_expired_pdfs(user_id: str, quotes: list):
 # ⚙️ PDF GENERATION ENGINE
 # ==========================================
 def _draw_header(c, width, height, quote_data):
-    # Augmentation de la hauteur de l'en-tête pour éviter tout débordement dynamique
     header_height = 1.65 * inch
     header_y = height - header_height
     
-    # Background and blue accent
     c.setFillColorRGB(0.97, 0.97, 0.97)
     c.rect(0, header_y, width, header_height, fill=True, stroke=False)
     c.setFillColorRGB(0.09, 0.44, 0.76)
     c.rect(0, header_y, width, 0.03 * inch, fill=True, stroke=False)
 
-    # ==========================================
-    # RIGHT SIDE: TEXT INFORMATION (DYNAMIC Y-AXIS)
-    # ==========================================
     current_y = height - 0.35 * inch
     
-    # 1. Business Name & Contact Info
     if quote_data.get('seller_name'):
         c.setFont("Helvetica-Bold", 12)
         c.setFillColorRGB(0.2, 0.2, 0.2)
@@ -483,22 +486,19 @@ def _draw_header(c, width, height, quote_data):
         c.drawRightString(width - 0.75 * inch, current_y, quote_data['business_email'])
         current_y -= 0.14 * inch
 
-    current_y -= 0.08 * inch # Spacing before Title
+    current_y -= 0.08 * inch 
 
-    # 2. Document Title
     c.setFillColorRGB(0.2, 0.2, 0.2)
     c.setFont("Helvetica-Bold", 20)
     c.drawRightString(width - 0.75 * inch, current_y, "Cotización")
     current_y -= 0.22 * inch
 
-    # 3. Quote Number
     if quote_data.get('quote_number'):
         c.setFont("Helvetica-Bold", 10)
         c.setFillColorRGB(0.09, 0.44, 0.76)
         c.drawRightString(width - 0.75 * inch, current_y, quote_data['quote_number'])
         current_y -= 0.18 * inch
 
-    # 4. Dates
     c.setFont("Helvetica", 9)
     c.setFillColorRGB(0.5, 0.5, 0.5)
     c.drawRightString(width - 0.75 * inch, current_y, f"Fecha: {quote_data['date']}")
@@ -507,9 +507,6 @@ def _draw_header(c, width, height, quote_data):
     if quote_data.get('validity_date'):
         c.drawRightString(width - 0.75 * inch, current_y, f"Válida hasta: {quote_data['validity_date']}")
 
-    # ==========================================
-    # LEFT SIDE: LOGO
-    # ==========================================
     c.setFillColorRGB(0, 0, 0)
     logo_w, logo_h = 2.0 * inch, 1.0 * inch
     logo_x = 0.75 * inch
@@ -536,7 +533,6 @@ def _draw_header(c, width, height, quote_data):
         except Exception as e:
             logger.warning(f"Logo draw failed: {e}")
     else:
-        # Minimalist fallback if no logo is provided
         if quote_data.get('seller_name'):
             c.setFont("Helvetica-Bold", 15)
             c.setFillColorRGB(0.2, 0.2, 0.2)
@@ -554,6 +550,9 @@ def _draw_client_info(c, y_pos, quote_data) -> float:
     c.setFont("Helvetica", 10)
     if quote_data.get('display_phone'):
         c.drawString(1 * inch, y_pos, f"Tel / WhatsApp: {quote_data['display_phone']}")
+        y_pos -= 0.2 * inch
+    if quote_data.get('client_email'):
+        c.drawString(1 * inch, y_pos, f"Email: {quote_data['client_email']}")
         y_pos -= 0.2 * inch
     if quote_data.get('client_nit'):
         c.drawString(1 * inch, y_pos, f"NIT / ID Fiscal: {quote_data['client_nit']}")
@@ -715,7 +714,6 @@ def generate_pdf(quote_data: dict) -> bytes:
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
     _draw_header(c, width, height, quote_data)
-    # On descend un peu le texte d'infos client car le header est légèrement plus grand
     y_pos = _draw_client_info(c, height - 1.95 * inch, quote_data)
     y_pos = _draw_items_table(c, y_pos, quote_data, width, height)
     _draw_totals(c, y_pos, quote_data)
@@ -943,7 +941,10 @@ def page_free_generator():
 
     default_val_days = int(profile.get("default_validity_days", 15))
     validity_days = col_val.number_input("Válida por (días)", min_value=1, value=default_val_days)
-    validity_date = (datetime.now() + timedelta(days=int(validity_days))).strftime("%d/%m/%Y")
+    
+    # Using Guatemala Timezone for accurate valid dates
+    now_gt = datetime.now(GT_TZ)
+    validity_date = (now_gt + timedelta(days=int(validity_days))).strftime("%d/%m/%Y")
 
     st.divider()
 
@@ -961,16 +962,16 @@ def page_free_generator():
             display_phone = f"+{phone_prefix} {clean_phone}" if clean_phone and phone_prefix else c_phone
             currency_symbol = "Q" if "Q" in currency else "$"
 
-            now = datetime.now()
             quote_number = ""
             if st.session_state.user:
                 quote_number = get_quote_number(
-                    st.session_state.user.id, now.year,
+                    st.session_state.user.id, now_gt.year,
                     st.session_state.total_quotes_count
                 )
+                st.session_state.last_quote_number = quote_number
 
             q_data = {
-                "date": now.strftime("%d/%m/%Y"),
+                "date": now_gt.strftime("%d/%m/%Y"),
                 "validity_date": validity_date,
                 "quote_number": quote_number,
                 "client_name": c_name,
@@ -1091,10 +1092,8 @@ def page_free_generator():
         with col_act3:
             safe_name = "".join(ch for ch in display_name if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
             
-            q_num = ""
-            if st.session_state.user:
-                q_num = get_quote_number(st.session_state.user.id, datetime.now().year, st.session_state.total_quotes_count)
-            dl_name = f"{q_num}_{safe_name}.pdf" if q_num else f"COT_{safe_name}.pdf"
+            q_num_dl = st.session_state.get('last_quote_number', '')
+            dl_name = f"{q_num_dl}_{safe_name}.pdf" if q_num_dl else f"COT_{safe_name}.pdf"
             
             st.download_button(
                 label="📥 Descargar",
@@ -1252,14 +1251,20 @@ def page_history():
                         st.link_button("💬 WhatsApp", wa_send_url, use_container_width=True)
                     else:
                         st.button("💬 WhatsApp", disabled=True, use_container_width=True)
+                
+                # Lazy Load Download Pattern (Protects Server Memory)
                 with col3:
-                    try:
-                        temp_pdf_bytes = generate_pdf(q_data)
-                        safe_name = "".join(ch for ch in client_name if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
-                        dl_name = f"{quote_number}_{safe_name}.pdf" if quote_number else f"COT_{safe_name}.pdf"
-                        st.download_button("📥 Descargar", data=temp_pdf_bytes, file_name=dl_name, mime="application/pdf", use_container_width=True, key=f"dl_{doc_id}")
-                    except Exception:
-                        st.button("📥 Descargar", disabled=True, use_container_width=True, key=f"dl_err_{doc_id}")
+                    safe_name = "".join(ch for ch in client_name if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
+                    dl_name = f"{quote_number}_{safe_name}.pdf" if quote_number else f"COT_{safe_name}.pdf"
+                    
+                    if st.session_state.get(f"ready_dl_{doc_id}"):
+                        st.download_button("✅ Guardar PDF", data=st.session_state[f"pdf_{doc_id}"], file_name=dl_name, mime="application/pdf", use_container_width=True, key=f"dl_{doc_id}")
+                    else:
+                        if st.button("📥 Preparar Descarga", use_container_width=True, key=f"prep_{doc_id}"):
+                            with st.spinner("Preparando..."):
+                                st.session_state[f"pdf_{doc_id}"] = generate_pdf(q_data)
+                                st.session_state[f"ready_dl_{doc_id}"] = True
+                                st.rerun()
 
                 col4, col5, col6 = st.columns(3)
                 with col4:
@@ -1373,17 +1378,24 @@ def page_analytics():
     fetch_user_data()
     total_ganado = st.session_state.total_ganado
     currency = st.session_state.user_profile.get("default_currency", "Q")
+    
+    total_quotes = st.session_state.total_quotes_count
+    won = st.session_state.quotes_won_count
+    conversion = (won / total_quotes) * 100 if total_quotes > 0 else 0.0
 
     with st.container(border=True):
         st.metric(f"🏆 Ingresos Totales", f"{currency} {total_ganado:,.2f}")
         
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         with st.container(border=True):
-            st.metric("✅ Tratos Ganados", st.session_state.quotes_won_count)
+            st.metric("✅ Tratos Ganados", won)
     with col2:
         with st.container(border=True):
-            st.metric("📝 Cotizaciones este mes", st.session_state.quotes_this_month)
+            st.metric("📝 Cotizaciones (Mes)", st.session_state.quotes_this_month)
+    with col3:
+        with st.container(border=True):
+            st.metric("📈 Tasa de Conversión", f"{conversion:.1f}%")
         
     if total_ganado == 0:
         st.info("💡 Consejo: Cuando un cliente acepte tu cotización, ve a tu **Historial** y márcala como 'Ganada' para ver tus ingresos aquí.")
@@ -1429,7 +1441,7 @@ def page_profile():
 
         st.divider()
         
-        st.markdown("**📞 Contacto del Negocio (Aparecerá en el PDF)**")
+        st.markdown("**📞 Información de contacto (Visible en la cotización)**")
         col_tel, col_em = st.columns(2)
         bus_phone = col_tel.text_input("Teléfono", value=profile.get('business_phone', ''), placeholder="+502 5555 1234")
         bus_email = col_em.text_input("Email", value=profile.get('business_email', ''), placeholder="contacto@minegocio.com")
@@ -1474,7 +1486,7 @@ def page_profile():
                         logger.warning(f"Old logo delete failed: {e}")
 
                 file_ext = new_logo.name.split('.')[-1].lower()
-                file_path = f"{st.session_state.user.id}/logo_{int(datetime.now().timestamp())}.{file_ext}"
+                file_path = f"{st.session_state.user.id}/logo_{int(datetime.now(GT_TZ).timestamp())}.{file_ext}"
                 try:
                     supabase.storage.from_("logos").upload(
                         file=new_logo.getvalue(), path=file_path,
