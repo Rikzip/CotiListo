@@ -322,7 +322,7 @@ TEMPLATES = {
     "General": ["Producto básico", "Producto premium", "Servicio general", "Envío / Delivery", "Descuento especial"],
     "Taller Mecánico / Motos": ["Diagnóstico general", "Servicio menor", "Servicio mayor", "Cambio de aceite y filtro", "Cambio de pastillas de freno", "Alineación y balanceo", "Revisión del sistema eléctrico", "Reparación de motor", "Limpieza de inyectores"],
     "Odontología / Dentista": ["Consulta de evaluación", "Limpieza dental (Profilaxis)", "Relleno blanco (Resina)", "Extracción simple", "Extracción de cordal", "Blanqueamiento dental", "Tratamiento de canales", "Radiografía panorámica"],
-    "Clínica Médica": ["Consulta médica general", "Consulta con specialist", "Examen de laboratorio clínico", "Electrocardiograma", "Ultrasonido", "Certificado médico", "Aplicación de medicamento"],
+    "Clínica Médica": ["Consulta médica general", "Consulta con especialista", "Examen de laboratorio clínico", "Electrocardiograma", "Ultrasonido", "Certificado médico", "Aplicación de medicamento"],
     "Construcción / Carpintería": ["Mano de obra (por día)", "Mano de obra (por obra)", "Instalación (m2)", "Fabricación de mueble a medida", "Pintura interior/exterior (m2)", "Reparación estructural", "Supervisión de obra", "Materiales varios"],
     "Freelance / Servicios": ["Consultoría (por hora)", "Consultoría (por proyecto)", "Desarrollo de página web", "Diseño de logotipo", "Gestión de redes sociales (Mensual)", "Auditoría / Análisis", "Traducción de documentos"],
     "Eventos / Catering": ["Menú por persona (Básico)", "Menú por persona (Premium)", "Alquiler de salón", "Alquiler de sillas y mesas", "Servicio de meseros", "Decoración floral", "Pastel personalizado", "Equipo de sonido"],
@@ -724,6 +724,11 @@ def generate_pdf(quote_data: dict) -> bytes:
     buffer.close()
     return pdf_bytes
 
+@st.cache_data(show_spinner=False)
+def get_cached_pdf(q_data_json: str) -> bytes:
+    q_data_dict = json.loads(q_data_json)
+    return generate_pdf(q_data_dict)
+
 
 # ==========================================
 # 📂 PAGE: GENERADOR
@@ -942,7 +947,6 @@ def page_free_generator():
     default_val_days = int(profile.get("default_validity_days", 15))
     validity_days = col_val.number_input("Válida por (días)", min_value=1, value=default_val_days)
     
-    # Using Guatemala Timezone for accurate valid dates
     now_gt = datetime.now(GT_TZ)
     validity_date = (now_gt + timedelta(days=int(validity_days))).strftime("%d/%m/%Y")
 
@@ -1252,7 +1256,6 @@ def page_history():
                     else:
                         st.button("💬 WhatsApp", disabled=True, use_container_width=True)
                 
-                # Lazy Load Download Pattern (Protects Server Memory)
                 with col3:
                     safe_name = "".join(ch for ch in client_name if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
                     dl_name = f"{quote_number}_{safe_name}.pdf" if quote_number else f"COT_{safe_name}.pdf"
@@ -1365,6 +1368,65 @@ def page_clients():
 
 
 # ==========================================
+# 📚 PAGE: CATÁLOGO
+# ==========================================
+def page_catalog():
+    if st.session_state.get("catalog_saved"):
+        st.toast("¡Catálogo actualizado!", icon="✅")
+        st.session_state.catalog_saved = False
+
+    st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
+    st.title("📚 Mi Catálogo")
+    st.markdown("Gestiona los productos y servicios que ofreces.")
+
+    if not st.session_state.user:
+        st.warning("Inicia sesión para configurar tu catálogo.")
+        return
+
+    fetch_user_data()
+    profile = st.session_state.user_profile
+    catalog = list(profile.get("catalog", []))
+
+    if catalog:
+        for idx, item in enumerate(catalog):
+            with st.container(border=True):
+                col1, col2, col3 = st.columns([4, 2, 1])
+                col1.write(f"🔹 **{item['desc']}**")
+                col2.write(f"{profile.get('default_currency', 'Q')} {item['price']}")
+                if col3.button("❌", key=f"del_cat_{idx}", help="Eliminar este servicio"):
+                    catalog.pop(idx)
+                    try:
+                        supabase.table("profiles").upsert({**profile, "catalog": catalog}).execute()
+                        fetch_user_data(force=True)
+                        st.session_state.catalog_saved = True
+                        st.rerun()
+                    except Exception as e:
+                        logger.error(f"Catalog delete error: {e}")
+                        st.error(f"Error al eliminar: {e}")
+    else:
+        st.info("Aún no tienes productos o servicios en tu catálogo.")
+
+    st.divider()
+    st.markdown("### ➕ Añadir Nuevo")
+    with st.container(border=True):
+        new_desc = st.text_input("Nombre del Servicio / Producto", placeholder="Ej: Cambio de aceite")
+        new_price = st.number_input("Precio Base", min_value=0.0)
+        if st.button("Guardar en Catálogo", type="primary"):
+            if new_desc and new_price > 0:
+                catalog.append({"desc": new_desc, "price": new_price})
+                try:
+                    supabase.table("profiles").upsert({**profile, "catalog": catalog}).execute()
+                    fetch_user_data(force=True)
+                    st.session_state.catalog_saved = True
+                    st.rerun()
+                except Exception as e:
+                    logger.error(f"Catalog add error: {e}")
+                    st.error(f"Error al añadir: {e}")
+            else:
+                st.warning("Por favor completa la descripción y el precio.")
+
+
+# ==========================================
 # 📊 PAGE: ANÁLISIS
 # ==========================================
 def page_analytics():
@@ -1408,9 +1470,6 @@ def page_profile():
     if st.session_state.get("profile_saved"):
         st.toast("¡Perfil guardado con éxito!", icon="✅")
         st.session_state.profile_saved = False
-    if st.session_state.get("catalog_saved"):
-        st.toast("¡Catálogo actualizado!", icon="📚")
-        st.session_state.catalog_saved = False
 
     st.page_link(page_gen, label="Volver al Generador", icon="⬅️")
     st.title("⚙️ Mi Perfil")
@@ -1420,7 +1479,7 @@ def page_profile():
 
     fetch_user_data()
     profile = st.session_state.user_profile
-    catalog = list(profile.get("catalog", []))
+    catalog = list(profile.get("catalog", [])) # Kept for saving profile without losing catalog
 
     with st.expander("🏢 Negocio, Logo y Banco", expanded=True):
         name = st.text_input("Nombre del Negocio", value=profile.get('business_name', ''))
@@ -1512,7 +1571,7 @@ def page_profile():
                     "account_number": acc_num,
                     "account_name": acc_name,
                     "terms_conditions": terms,
-                    "catalog": catalog,
+                    "catalog": catalog, # Send back existing catalog so it doesn't get erased
                 }).execute()
                 fetch_user_data(force=True)
                 st.session_state.profile_saved = True
@@ -1521,41 +1580,6 @@ def page_profile():
                 logger.error(f"Profile save error: {e}")
                 st.error(f"Error de base de datos: {e}")
 
-    st.subheader("📚 Mi Catálogo")
-    if catalog:
-        for idx, item in enumerate(catalog):
-            col1, col2, col3 = st.columns([4, 2, 1])
-            col1.write(f"🔹 {item['desc']}")
-            col2.write(f"{profile.get('default_currency', 'Q')} {item['price']}")
-            if col3.button("❌", key=f"del_cat_{idx}"):
-                catalog.pop(idx)
-                try:
-                    supabase.table("profiles").upsert({**profile, "catalog": catalog}).execute()
-                    fetch_user_data(force=True)
-                    st.session_state.catalog_saved = True
-                    st.rerun()
-                except Exception as e:
-                    logger.error(f"Catalog delete error: {e}")
-                    st.error(f"Error al eliminar: {e}")
-    else:
-        st.info("Catálogo vacío.")
-
-    with st.container(border=True):
-        new_desc = st.text_input("Servicio / Producto")
-        new_price = st.number_input("Precio", min_value=0.0)
-        if st.button("➕ Guardar en Catálogo"):
-            if new_desc and new_price > 0:
-                catalog.append({"desc": new_desc, "price": new_price})
-                try:
-                    supabase.table("profiles").upsert({**profile, "catalog": catalog}).execute()
-                    fetch_user_data(force=True)
-                    st.session_state.catalog_saved = True
-                    st.rerun()
-                except Exception as e:
-                    logger.error(f"Catalog add error: {e}")
-                    st.error(f"Error al añadir: {e}")
-            else:
-                st.warning("Completa la descripción y el precio.")
 
     st.subheader("🔒 Seguridad")
     with st.expander("Cambiar mi Contraseña"):
@@ -1710,6 +1734,7 @@ def page_login():
 page_gen = st.Page(page_free_generator, title="Generador", icon="📝")
 page_hist = st.Page(page_history, title="Historial", icon="🗂️")
 page_crm = st.Page(page_clients, title="Mis Clientes", icon="👥")
+page_cat = st.Page(page_catalog, title="Mi Catálogo", icon="📚")
 page_ana = st.Page(page_analytics, title="Análisis", icon="📊")
 page_prof = st.Page(page_profile, title="Mi Perfil", icon="⚙️")
 page_sup = st.Page(page_support, title="Soporte", icon="💬")
@@ -1751,7 +1776,7 @@ if st.session_state.user:
             st.session_state.last_client_email = ""
             st.session_state.session_restored = False
             st.rerun()
-    pg = st.navigation([page_gen, page_hist, page_crm, page_ana, page_prof, page_sup])
+    pg = st.navigation([page_gen, page_hist, page_crm, page_cat, page_ana, page_prof, page_sup])
 else:
     pg = st.navigation([page_gen, page_sup, page_log])
 
